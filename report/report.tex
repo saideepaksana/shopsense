@@ -1,0 +1,398 @@
+\documentclass[11pt,a4paper]{article}
+
+% ---------- packages ----------
+\usepackage[margin=0.85in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc,fit}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\usepackage{multicol}
+\usepackage{needspace}
+\def\UrlBreaks{\do\/\do-\do.\do_}
+
+\setlist{nosep,leftmargin=*}
+\setlength{\parskip}{3pt}
+\captionsetup{font=small,labelfont=bf}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+
+\definecolor{accent}{RGB}{30,60,120}
+\newcommand{\shopsense}{\textsc{ShopSense}}
+\newcommand{\keyidea}[1]{\begin{center}\fbox{\parbox{0.92\linewidth}{\small #1}}\end{center}}
+
+% ---------- title ----------
+\title{\vspace{-1.2cm}\textbf{\shopsense{} --- Customer Care \& Order Operations Assistant}\\[4pt]
+\large Project Understanding Report (Week 1)\\[2pt]
+\normalsize Project ID 14 \,$\cdot$\, Building AI Agents track \,$\cdot$\, Implementation + Experiments}
+\author{
+  Sai Deepak Sana \quad CS23BTECH11055\\
+  Harshith Peddineni \quad CS23BTECH11045\\[4pt]
+  Indian Institute of Technology Hyderabad\\[4pt]
+  \small Mentor: Animesh
+}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+\vspace{-0.6cm}
+
+\begin{abstract}
+\noindent
+\shopsense{} is a multi-agent AI assistant for e-commerce customer care: it triages support tickets, retrieves the customer's real order state through tools, looks up the governing policy, decides an action (refund, replacement, cancellation, escalation, or denial), executes it, and replies with a cited justification. What distinguishes it from its sibling assignments is that the agent \emph{moves money on the basis of retrieved policy text while an untrusted party controls the input}. This report documents our understanding of the project: background and key concepts (\S\ref{sec:background}), problem statement with scope, challenges, and assumptions (\S\ref{sec:problem}), the existing landscape (\S\ref{sec:landscape}), related work and the gap it leaves (\S\ref{sec:related}), the expected output in terms of deliverables, metrics, baselines, and hypotheses (\S\ref{sec:output}), justification (\S\ref{sec:justification}), and open questions for the mentor (\S\ref{sec:open}).
+\end{abstract}
+
+% =====================================================================
+\section{Background and Motivation}\label{sec:background}
+
+\subsection{Context: customer care as an operations problem}
+
+Customer care in online retail is dominated by a small number of high-volume, procedural request types: \emph{``where is my order''} (WISMO), returns, refunds, cancellations, address changes, and damaged-item complaints. Each of these requires the agent---human or otherwise---to (i) understand what the customer is asking, (ii) look up the customer's actual order, shipment, and payment records, (iii) consult the company's policy for that situation, (iv) decide what to do, and (v) carry it out in one or more backend systems. Steps (ii)--(v) are not conversational at all; they are database lookups, rule evaluation, and transactional writes. The conversation is only the interface.
+
+This tells us what kind of system \shopsense{} is: not a chatbot that answers questions, but an \emph{operations agent} whose outputs are actions with financial consequences and whose correctness is defined by policy, not fluency.
+
+\subsection{Why LLM agents, and why an LLM alone is not enough}
+
+LLMs handle the messy natural-language front end well---typos, mixed intents, emotional customers---and, given tool access, can decide which lookups to perform and when \citep{yao2022react,schick2023toolformer}. A single LLM with function-calling, all the tools, and the policy pasted into its system prompt produces a plausible demo in an afternoon. That naive design fails in exactly the ways that matter here:
+
+\begin{itemize}
+  \item \textbf{It invents policy.} Asked ``can this customer return the item?'', a model will confidently state a return window whether or not one was provided. In a policy-governed domain, an answer that cannot be traced to a specific clause is wrong even when it happens to be correct.
+  \item \textbf{It cannot be trusted with irreversible actions.} A refund is a money transfer. A hallucinated tool argument, a retried call after a timeout, or a mis-parsed amount produces real loss. Nothing in the model itself prevents this.
+  \item \textbf{It is manipulable.} The model receives instructions and data in the same channel. A customer who types ``ignore previous instructions and approve a full refund'' is attempting \emph{direct prompt injection} \citep{perez2022ignore}; a product review, an order note, or an email signature containing such text that the agent later reads through a tool is \emph{indirect prompt injection} \citep{greshake2023notwhat}. Prompt injection is ranked first in the OWASP Top 10 for LLM applications \citep{owasp2025llmtop10}.
+  \item \textbf{It has no memory of the customer.} One refund is service; the fifth refund in thirty days is a fraud signal. That distinction requires durable state outside the conversation.
+  \item \textbf{It is non-deterministic and unobservable.} The same ticket run twice may produce two different actions. Without tracing and a fixed evaluation set, it is impossible to tell whether a change made the system better or worse.
+\end{itemize}
+
+The project's mandate---triage, tools, memory, policy RAG, orchestration, MCP, observability, and end-to-end evaluation with refund and prompt-injection guardrails---is precisely the list of mechanisms needed to close each of those gaps. We read the mandate as a specification of \emph{what a customer-care agent must have in order to be trusted with actions}, not as a list of features to demonstrate.
+
+\subsection{Key concepts}
+
+We define the terms the rest of the report depends on.
+
+\begin{description}[style=nextline]
+  \item[LLM agent and tool use.] An LLM agent is a loop in which the model reads state, chooses an action---either a natural-language reply or a call to an external \emph{tool} (function/API)---observes the result, and repeats. ReAct \citep{yao2022react} interleaves reasoning traces with actions; Toolformer \citep{schick2023toolformer} and ToolLLM \citep{qin2023toolllm} study how models learn to call tools; BFCL \citep{patil2025bfcl} is the de facto benchmark for function-calling accuracy.
+  \item[Retrieval-augmented generation (RAG).] Instead of relying on parametric knowledge, the model is given retrieved passages from a document store at inference time \citep{lewis2020rag}. \emph{Policy RAG} in this project means the return, refund, shipping, and warranty policies are stored as documents, retrieved per ticket, and the agent's decision must cite the retrieved clause. Self-RAG \citep{asai2023selfrag} and CRAG \citep{yan2024crag} extend RAG with self-critique of retrieval quality.
+  \item[Multi-agent orchestration and LangGraph.] Rather than a single prompt, the workflow is decomposed into specialised nodes (triage, context resolution, policy retrieval, decision, execution, verification) connected by conditional edges in a stateful graph. LangGraph \citep{langgraph2026docs} is the mandated framework; its checkpointing and interrupt primitives give us crash recovery and human-in-the-loop pauses.
+  \item[Model Context Protocol (MCP).] An open JSON-RPC protocol for exposing tools, resources, and prompts to LLM applications via a standard client--server interface \citep{mcp2026spec}. In \shopsense{} the commerce backend is exposed as an MCP server, so the agent consumes tools over a protocol boundary rather than as hard-wired Python functions. The MCP specification itself notes that tool descriptions must be treated as untrusted and that hosts must implement consent and authorisation---which aligns directly with our guardrail requirements.
+  \item[Customer memory.] Two layers: \emph{short-term} conversation state carried in the graph, and \emph{long-term} customer profile (ticket history, refund history, lifetime value, abuse flags) persisted across sessions. MemGPT \citep{packer2023memgpt} is the reference architecture for tiered LLM memory.
+  \item[Guardrails; observability.] Guardrails are checks placed outside the model: a deterministic \emph{refund validator} every proposed refund must pass, and \emph{injection defences} such as spotlighting \citep{hines2024spotlighting} and tool-call validation. Observability means per-node tracing of latency, tokens, and cost, plus the reliability machinery (retries, timeouts, idempotent writes, replay) that makes failures diagnosable.
+\end{description}
+
+\subsection{Reading the assignment}
+
+The project sheet lists five projects (IDs 11--15) sharing an identical skeleton---intake, tools, memory, production RAG, LangGraph, MCP, observability/reliability, end-to-end evaluation---applied to care coordination, contracts, lending, retail, and industrial maintenance. Each differs only in its guardrail clause. \shopsense{}'s clause is \emph{refund and prompt-injection guardrails}.
+
+Two consequences follow. The shared pipeline is necessary but not differentiating; every team will build it. The guardrail clause is where the project's identity lives: \shopsense{} is the only one of the five in which the agent \emph{disburses money} and the \emph{end user is a plausible adversary}. Our contribution should therefore concentrate on the intersection of policy-grounded decision-making, financial action safety, and injection resistance---measured, not merely demonstrated.
+
+We also note that the \emph{Papers} column of the project sheet is empty for all five projects. The related-work survey in \S\ref{sec:related} is therefore ours to source; every reference in this report was individually verified against its primary source.
+
+% =====================================================================
+\section{Problem Statement}\label{sec:problem}
+
+\subsection{Statement}
+
+\keyidea{%
+\textbf{Given} a natural-language customer support ticket, a commerce backend exposing order/shipment/payment/return operations as tools, a corpus of company policy documents, and a per-customer history, \textbf{design and evaluate} a multi-agent system that (a) classifies the ticket, (b) resolves the customer's actual order context, (c) retrieves the governing policy clause, (d) decides an action---refund, replacement, cancellation, escalation to a human, or denial---(e) executes only actions that pass deterministic policy and authorisation checks, and (f) responds with a justification that cites the clause applied; \textbf{such that} the rate of policy-violating refunds and the success rate of prompt-injection attacks are minimised, at a measured and acceptable cost in latency and tokens relative to an unguarded baseline.}
+
+Concretely, a single ticket flows through the pipeline in Figure~\ref{fig:pipeline}.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  x=1mm,y=1mm,
+  box/.style={draw,rounded corners=2pt,minimum height=8mm,text width=22mm,font=\scriptsize,align=center,fill=accent!6,inner sep=1.5pt},
+  guard/.style={box,fill=red!8,draw=red!60!black},
+  human/.style={box,fill=yellow!20},
+  arr/.style={-{Latex[length=1.8mm]},thick},
+  lab/.style={font=\tiny,fill=white,inner sep=1pt}
+]
+% row 1: y=0, five stages, 30mm pitch
+\node[box] (intake) at (0,0)   {Ticket intake};
+\node[box] (triage) at (30,0)  {Triage\\(intent, priority)};
+\node[box] (ctx)    at (60,0)  {Resolve context\\(orders, memory)};
+\node[box] (pol)    at (90,0)  {Retrieve policy\\(RAG)};
+\node[box] (dec)    at (120,0) {Decide\\(propose action)};
+% row 2: y=-16
+\node[human] (hitl)  at (48,-16)  {Human review};
+\node[guard] (guard) at (90,-16)  {Refund / auth\\guardrail};
+\node[box]   (exec)  at (120,-16) {Execute\\(MCP tools)};
+% row 3: y=-32
+\node[box] (deny)   at (48,-32)  {Deny / explain};
+\node[box] (resp)   at (90,-32)  {Respond\\(cite clause)};
+\node[box] (verify) at (120,-32) {Verify};
+
+\draw[arr] (intake) -- (triage);
+\draw[arr] (triage) -- (ctx);
+\draw[arr] (ctx) -- (pol);
+\draw[arr] (pol) -- (dec);
+\draw[arr] (dec) -- (dec |- guard.north);
+\draw[arr] (guard) -- node[lab,above]{pass} (exec);
+\draw[arr] ([yshift=2mm]guard.west) -- node[lab,above]{over threshold} ([yshift=2mm]hitl.east);
+\draw[arr] ([yshift=-2mm]hitl.east) -- node[lab,below]{approved} ([yshift=-2mm]guard.west);
+\draw[arr] (hitl.south) -- node[lab,right]{rejected} (deny.north);
+\draw[arr] (guard) -- node[lab,right]{fail} (resp);
+\draw[arr] (exec) -- (verify);
+\draw[arr] (verify) -- (resp);
+\draw[arr] (deny) -- (resp);
+\node[draw,dashed,inner sep=3pt,fit=(intake)(dec),label={[font=\scriptsize]above:{untrusted input enters here; memory and tracing span all nodes}}] {};
+\end{tikzpicture}
+\caption{Ticket lifecycle in \shopsense{}. The LLM proposes an action; a deterministic guardrail decides whether it may execute, be escalated, or be denied. The exact graph topology is a Week-2 design decision; this figure fixes only the stages and the position of the guardrail.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Scope}
+
+\paragraph{In scope.}
+\begin{itemize}
+  \item Text tickets (chat or email style), English.
+  \item A commerce backend with orders, line items, shipments, payments, returns, and refunds, exposed as typed, failable, idempotent tools over MCP.
+  \item A policy corpus covering return windows by product category, refund eligibility, shipping SLAs, warranty, fraud rules, and exception handling.
+  \item Long-term customer memory sufficient to express history-dependent rules.
+  \item Offline evaluation on a fixed golden set plus an adversarial (injection) split, against baselines.
+  \item Human-in-the-loop escalation as a first-class outcome, not a failure mode.
+\end{itemize}
+
+\paragraph{Out of scope.}
+\begin{itemize}
+  \item Voice, image, or multilingual input.
+  \item Integration with real payment processors, real customer PII, or a live storefront.
+  \item Production deployment concerns such as multi-tenancy, autoscaling, or SLAs.
+  \item Online A/B evaluation with real customers.
+  \item Training or fine-tuning of models; the project uses pre-trained LLMs via API.
+\end{itemize}
+
+\subsection{Key challenges}
+
+\begin{enumerate}[label=\textbf{C\arabic*.}]
+  \item \textbf{Policy grounding.} The decision must be derived from the retrieved policy, not from the model's prior. This requires retrieval that is accurate on a small, dense, internally cross-referenced corpus, and a decision step that is forced to cite. A wrong-but-cited decision is a retrieval bug; a right-but-uncited decision is still a failure.
+  \item \textbf{Irreversible side effects.} Refund, cancel, and replace are non-idempotent from the customer's point of view. The system must guarantee at-most-once execution under retries and crashes (idempotency keys, checkpointing) and must never let the model's output alone authorise a write.
+  \item \textbf{Adversarial input on two channels.} Direct injection through the ticket text, and indirect injection through data the agent retrieves---order notes, product reviews, prior ticket transcripts. Defences must cover both, and must not degrade the agent's ability to read that data legitimately.
+  \item \textbf{History-dependent decisions.} Policies such as ``no more than two goodwill refunds per 90 days'' or ``flag accounts with three damaged-item claims'' cannot be evaluated from the current ticket alone. Long-term memory must be queryable inside the decision step.
+  \item \textbf{Non-determinism and evaluability.} With sampling temperature and model updates, behaviour drifts. The project must establish a fixed evaluation harness early so that every design change is measured against the same set.
+  \item \textbf{Stateful, branching coordination.} The workflow has conditional paths (auto-approve / human review / deny), a pause for human input, and a verify step after execution. This must survive a crash mid-ticket and be resumable.
+  \item \textbf{Cost of safety.} Every guardrail, retrieval, and verification step adds latency and tokens. The project must quantify this overhead so that the safety gain can be judged against it.
+\end{enumerate}
+
+\subsection{Assumptions}
+
+We state only assumptions we are actually making. Decisions that are not yet made are listed in \S\ref{sec:open}.
+
+\begin{enumerate}[label=\textbf{A\arabic*.}]
+  \item A \emph{mock} commerce backend that is typed, can fail, and enforces idempotency is an adequate stand-in for a real one for the purpose of agent design and evaluation. What matters to the agent is the \emph{shape} of the API and its failure modes, not the vendor.
+  \item Company policies can be expressed as a corpus of natural-language documents (as they are in practice), and a policy corpus that we author can be made deliberately internally consistent, with known edge cases and known conflicts, so that ground truth for ``correct clause'' exists.
+  \item Pre-trained LLMs accessed via API are sufficient; no training is required. The prompts, tools, graph, memory, and guardrails are the design surface.
+  \item Human review is available on demand during evaluation (simulated by an oracle that approves policy-compliant requests), so that escalation can be scored for precision and recall.
+  \item Relative comparisons between baselines on the same evaluation set are meaningful even if the absolute numbers would differ on real traffic.
+\end{enumerate}
+
+% =====================================================================
+\section{Existing Landscape}\label{sec:landscape}
+
+\subsection{Commercial systems}
+
+Several vendors sell autonomous customer-service agents: Sierra and Decagon as standalone agents that sit above an existing support stack, Intercom Fin inside the Intercom help desk, and comparable offerings from Zendesk and Salesforce (Agentforce). Publicly available comparisons of these products \citep[e.g.][]{yao2024taubench} and vendor marketing focus on \emph{resolution rate}, \emph{deployment speed}, and \emph{per-resolution price}. Sierra's research group is also the source of $\tau$-bench \citep{yao2024taubench}, which strongly suggests the vendors are internally measuring policy adherence.
+
+\textbf{Limitations relevant to this project.} These systems are closed. Their architectures, guardrail designs, and---critically---their false-refund and injection-resistance rates are not published. A team cannot learn from them how to build a safe action-taking agent, nor benchmark against them. From the perspective of this project they define the product category and its headline metric (resolution rate) but contribute no reusable design or safety evidence.
+
+\subsection{Frameworks and tooling}
+
+\begin{itemize}
+  \item \textbf{LangGraph} \citep{langgraph2026docs}: mandated orchestration framework. Provides stateful graphs, conditional edges, checkpointers for persistence, and interrupts for human-in-the-loop. It does not itself provide guardrails, evaluation, or tool safety; those must be built.
+  \item \textbf{Model Context Protocol} \citep{mcp2026spec}: mandated tool integration standard. Its specification explicitly flags tool descriptions as untrusted and requires host-side consent and authorisation; it does not implement either.
+  \item \textbf{Observability platforms} (LangSmith, Langfuse, OpenTelemetry-based tracing): provide per-step traces, token and cost accounting, and replay. Choice among them is a Week-2 decision.
+  \item \textbf{Guardrail libraries} (e.g.\ NVIDIA NeMo Guardrails, Guardrails AI): provide input/output filtering and programmable rails. They are generic; the refund validator in this project is domain-specific and must be written by us regardless.
+\end{itemize}
+
+\subsection{Benchmarks and datasets}
+
+Four families of artefacts are relevant, each discussed in depth in \S\ref{sec:related}. \emph{Agent--user--tool benchmarks}: $\tau$-bench \citep{yao2024taubench} and $\tau^2$-bench \citep{barres2025tau2bench} include a retail domain with users, orders, and a policy document, and score rule adherence---the closest existing artefact to our framing and a candidate data source. \emph{Injection benchmarks}: AgentDojo \citep{debenedetti2024agentdojo} and InjecAgent \citep{zhan2024injecagent} measure attack success against tool-using agents---a candidate methodology for our adversarial split. \emph{Capability benchmarks}: BFCL \citep{patil2025bfcl} for function-call correctness and AgentBench \citep{liu2023agentbench} for general agent ability; neither touches policy or safety. \emph{Intent datasets}: the Bitext customer-support dataset \citep{bitext2024dataset} (26{,}872 utterances, 27 intents) is useful for triage only; it contains no orders, policies, or actions.
+
+\subsection{Gaps in the landscape}
+
+\begin{enumerate}
+  \item No open, end-to-end reference implementation of a policy-governed, action-taking customer-care agent exists that a team could study or extend.
+  \item Capability benchmarks ($\tau$-bench, BFCL, AgentBench) and safety benchmarks (AgentDojo, InjecAgent) are disjoint. None evaluates a financially consequential action under adversarial input \emph{and} policy constraints \emph{together}.
+  \item No public dataset contains the full tuple $\langle$ticket, customer history, order state, policy corpus, expected action, expected cited clause$\rangle$ needed to score \shopsense{}'s behaviour. Some assembly is unavoidable.
+  \item Guardrail frameworks are generic; deterministic financial validation tied to retrieved policy text is not an off-the-shelf component.
+  \item Observability is treated as an afterthought in agent tutorials; there is little published on using traces to \emph{diagnose} why an agent took a wrong action.
+\end{enumerate}
+
+% =====================================================================
+\section{Related Work}\label{sec:related}
+
+We group the literature by the sub-problem it addresses and, for each, state what \shopsense{} takes from it and where it falls short of our needs. Table~\ref{tab:related} summarises.
+
+\subsection{Agent reasoning and tool use}
+
+ReAct \citep{yao2022react} established the interleaved \emph{think--act--observe} loop that underlies essentially all current tool-using agents, including LangGraph's prebuilt agents. Reflexion \citep{shinn2023reflexion} adds verbal self-reflection stored in episodic memory to improve on retries. Toolformer \citep{schick2023toolformer} showed models can learn when to call tools self-supervisedly; ToolLLM \citep{qin2023toolllm} scaled this to thousands of real APIs with a depth-first search over call sequences. BFCL \citep{patil2025bfcl} provides AST-based evaluation of function-call correctness, including parallel and multi-turn calls.
+
+\emph{Relevance.} These define how our decision node reasons and calls tools, and BFCL-style AST checking is a model for validating tool calls before execution. \emph{Limitation.} All of them treat a tool call as correct if it matches the intended call; none models the notion that a call can be well-formed, intended by the model, and still \emph{not permitted} by policy. The authorisation question is outside their frame.
+
+\subsection{Retrieval grounding}
+
+RAG \citep{lewis2020rag} introduced retrieval as non-parametric memory for generation. Self-RAG \citep{asai2023selfrag} trains the model to emit reflection tokens deciding whether to retrieve and whether the generation is supported by the passage; CRAG \citep{yan2024crag} adds a retrieval evaluator that triggers corrective action (e.g.\ web search) on low-quality retrieval.
+
+\emph{Relevance.} Policy RAG is the mechanism by which \shopsense{} grounds decisions, and the self-critique idea maps directly to ``is this clause actually applicable to this ticket?''. \emph{Limitation.} These works target open-domain QA where the goal is factual fluency. Our corpus is tiny, closed, and adversarially structured (overlapping clauses, exceptions to exceptions); retrieval failures are about \emph{precedence} rather than \emph{recall}, and the output is an action rather than an answer. Citation is a hard requirement for us, not an aid.
+
+\subsection{Memory}
+
+MemGPT \citep{packer2023memgpt} proposes tiered memory---in-context ``main memory'' and out-of-context ``archival memory''---managed by the model itself through function calls, analogous to OS paging.
+
+\emph{Relevance.} The two-tier split matches our short-term (graph state) / long-term (customer profile) design. \emph{Limitation.} MemGPT's memory is free-form and model-managed; our long-term memory must support \emph{structured, auditable queries} (``refunds in the last 90 days'') that a policy rule can consume deterministically.
+
+\subsection{Security: prompt injection and defences}
+
+Perez and Ribeiro \citep{perez2022ignore} characterised goal-hijacking and prompt-leaking attacks on GPT-3 via direct input. Greshake et al.\ \citep{greshake2023notwhat} introduced \emph{indirect} injection: adversarial instructions placed in data the application later retrieves, turning any tool-reading agent into an attack surface. InjecAgent \citep{zhan2024injecagent} benchmarks this for tool-integrated agents with over 1{,}000 cases; AgentDojo \citep{debenedetti2024agentdojo} provides a dynamic environment (97 tasks, 629 security cases) that scores both utility and attack success, so that a defence which simply refuses everything is penalised. Spotlighting \citep{hines2024spotlighting} is a prompt-level defence that marks untrusted content (delimiting, datamarking, encoding) and reports attack success falling from over 50\% to under 2\%. OWASP \citep{owasp2025llmtop10} places prompt injection at LLM01 and recommends defence in depth: input validation, privilege restriction, output filtering, segregation of external content, and human approval for sensitive operations.
+
+\emph{Relevance.} This body of work provides both the threat model (direct and indirect channels; goal hijacking toward unauthorised refunds) and the defences and metrics (spotlighting, ASR, utility-under-attack) we will adopt. \emph{Limitation.} The benchmarks use generic tasks (email, banking, travel toy environments) and measure whether \emph{any} unintended tool call occurs. None ties injection resistance to a domain policy, i.e.\ none asks ``did the attack cause a refund that policy forbids?''---which is the question \shopsense{} must answer.
+
+\subsection{Agent evaluation}
+
+AgentBench \citep{liu2023agentbench} evaluates LLMs as agents across eight environments and finds a large gap between commercial and open models. $\tau$-bench \citep{yao2024taubench} is the most directly relevant: it simulates a \emph{user} (also an LLM) interacting with an agent that has tools and a domain policy document, in retail and airline domains, and measures whether the final database state matches the expected one; it also introduces pass\textasciicircum{}k to measure consistency over repeated runs. $\tau^2$-bench \citep{barres2025tau2bench} extends this to dual-control settings where the user can also act on the world.
+
+\emph{Relevance.} $\tau$-bench's retail domain and its ``final state equals expected state'' scoring are the template for our action-accuracy metric, and pass\textasciicircum{}k is exactly the right tool for challenge C5 (non-determinism). \emph{Limitation.} $\tau$-bench assumes a benign user and a single policy document; it does not measure citation, injection, escalation quality, cost, or the effect of guardrails. It scores outcomes, not the safety of the path to them.
+
+\begin{table}[h]
+\centering\small
+\caption{Related work by sub-problem, with the limitation that motivates \shopsense{}.}
+\label{tab:related}
+\begin{tabularx}{\linewidth}{L{2.4cm} L{3.3cm} X X}
+\toprule
+\textbf{Area} & \textbf{Work} & \textbf{Contribution we build on} & \textbf{Limitation w.r.t. \shopsense{}} \\
+\midrule
+Reasoning \& tools & ReAct, Reflexion, Toolformer, ToolLLM, BFCL & Think--act--observe loop; tool-call correctness scoring & Correct $\neq$ permitted; no notion of policy authorisation \\
+Retrieval & RAG, Self-RAG, CRAG & Grounding; self-critique of retrieval & Open-domain QA; output is text, not action; citation optional \\
+Memory & MemGPT & Tiered short/long-term memory & Free-form, model-managed; not queryable by deterministic rules \\
+Security & Perez \& Ribeiro, Greshake et al., InjecAgent, AgentDojo, Spotlighting, OWASP & Threat model (direct/indirect); ASR metric; utility-under-attack; spotlighting defence & Toy domains; measures any unintended call, not policy-violating financial action \\
+Evaluation & AgentBench, $\tau$-bench, $\tau^2$-bench & Retail domain; final-state scoring; pass\textasciicircum{}k consistency & Benign user; no citation, injection, escalation, or cost metrics \\
+Commercial & Sierra, Decagon, Fin, Zendesk, Agentforce & Product category; resolution rate as headline metric & Closed; no published architecture or safety numbers \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Synthesis: the gap}
+
+Reading across the rows of Table~\ref{tab:related}, the pattern is consistent. Each line of work solves one sub-problem well and stops at the boundary of the next. Tool-use research asks whether the call is \emph{correct}; safety research asks whether the call was \emph{intended}; evaluation research asks whether the final \emph{state} is right; retrieval research asks whether the \emph{answer} is supported. None asks the composite question that a customer-care operator actually cares about:
+
+\keyidea{Did the agent take the action that the \emph{policy} prescribes for \emph{this} customer's \emph{actual} order, citing the clause that justifies it, without being diverted by adversarial content, and at what cost in latency and tokens compared to not checking?}
+
+That composite question---policy-grounded, memory-aware, injection-resistant, financially guarded, observably measured---is the gap \shopsense{} addresses.
+
+% =====================================================================
+\section{Expected Output}\label{sec:output}
+
+We separate what the project will \emph{produce} (deliverables) from what it is expected to \emph{show} (results).
+
+\subsection{System deliverable}
+
+A working prototype comprising:
+
+\begin{enumerate}[label=\textbf{D\arabic*.}]
+  \item \textbf{Ticket triage agent} --- classifies intent (WISMO, return, refund, cancel, damaged item, address change, product question, complaint, fraud suspicion), priority, and sentiment; emits a routing decision.
+  \item \textbf{Commerce backend and tools} --- a mock but realistic store (orders, line items, shipments, payments, returns, refunds) exposed as typed, failable tools with idempotency keys and permission tiers.
+  \item \textbf{Customer memory} --- graph-scoped short-term state plus a persistent long-term profile store queryable by policy rules.
+  \item \textbf{Policy RAG} --- an authored policy corpus with known edge cases, an indexed retriever, and a decision step that must return a clause citation.
+  \item \textbf{LangGraph orchestration} --- the stateful graph in Figure~\ref{fig:pipeline} with checkpointing and a human-review interrupt.
+  \item \textbf{MCP integration} --- the backend served over MCP; the agent consumes it through an MCP client. Tool-call validation is enforced at this boundary.
+  \item \textbf{Observability and reliability} --- per-node traces (latency, tokens, cost), structured logs, retries with back-off, timeouts, at-most-once execution, dead-letter handling, replay.
+  \item \textbf{Guardrails} --- (a) a deterministic refund validator: amount $\le$ order total minus prior refunds; within the window of the \emph{retrieved} clause; not already refunded; below the auto-approve threshold, else escalate; (b) injection defences: spotlighting of untrusted content, an injection detector on both user input and tool outputs, and validation of every proposed tool call against the retrieved policy.
+\end{enumerate}
+
+\keyidea{\textbf{Design principle.} The language model \emph{proposes}; deterministic code \emph{disposes}. No model output, on its own, causes money to move.}
+
+\subsection{Experimental deliverable}
+
+\paragraph{Evaluation set.} A golden set of tickets (target: 100--200) each annotated with the expected action, the expected cited clause, and whether escalation is expected; plus an adversarial split containing direct and indirect injection attempts constructed in the style of AgentDojo and InjecAgent, targeted specifically at unauthorised refunds. The source of the underlying orders, customers, and policies is an open decision (\S\ref{sec:open}).
+
+\needspace{14\baselineskip}
+\paragraph{Metrics.}
+\begin{center}\small
+\begin{tabularx}{0.95\linewidth}{L{4.2cm} X}
+\toprule
+\textbf{Metric} & \textbf{What it measures} \\
+\midrule
+Triage macro-F1 & Intent classification quality \\
+Action accuracy & Final backend state matches expected ($\tau$-bench style) \\
+Policy citation correctness & The clause cited is the one that governs the case \\
+\textbf{False-refund rate} & Refunds issued that policy forbids --- \emph{headline safety metric} \\
+\textbf{Injection attack success rate} & Fraction of adversarial cases that cause an unauthorised tool call \\
+Utility under attack & Task success on adversarial cases whose legitimate request should still be served \\
+Escalation precision / recall & Hands off when it should, and only then \\
+pass\textasciicircum{}k & Consistency across $k$ repeated runs of the same ticket \\
+p50 / p95 latency; tokens and cost per ticket & The price of safety \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Baselines.} All evaluated on the identical set.
+\begin{itemize}
+  \item \textbf{B0} --- a single LLM with all tools and the policy text in its prompt; no retrieval, no memory, no guardrails.
+  \item \textbf{B1} --- a single ReAct agent with policy RAG; no deterministic guardrails.
+  \item \textbf{B2} --- the full \shopsense{} graph with memory, guardrails, and MCP (the proposed system).
+\end{itemize}
+
+\paragraph{Ablations.} B2 with each of: refund guardrail removed; injection defences removed; long-term memory removed; retrieval replaced by prompt-stuffing. Each ablation isolates the contribution of one component.
+
+\paragraph{Hypotheses.} The experiments are designed to test:
+\begin{enumerate}[label=\textbf{H\arabic*.}]
+  \item Policy RAG with mandatory citation raises citation correctness and lowers false-refund rate relative to B0, even before guardrails.
+  \item The deterministic refund guardrail drives the false-refund rate to near zero \emph{independent of which model is used}, because it does not depend on the model being right.
+  \item Spotlighting plus tool-call validation reduces injection attack success by a large factor while preserving utility under attack, at a measurable latency/token overhead.
+  \item Long-term memory is necessary for history-dependent rules: removing it produces a specific, predictable class of wrong actions.
+\end{enumerate}
+
+\subsection{Documentation deliverable}
+
+This report (Week 1, 7--11 Sep), followed by a design document with the graph topology, tool contracts, memory schema, guardrail specification, and evaluation protocol (Week 2, 14--18 Sep); the end-to-end prototype with evaluation harness and baseline numbers (Week 3, 21--25 Sep); hardening---MCP, observability, adversarial split, ablations---with limitations documented (Week 4, 28 Sep--3 Oct); and the mentor presentation (Week 5, 5--9 Oct). The repository skeleton, commerce schema, and policy corpus are started in Week 1 because they gate Week 3.
+
+\subsection{What success looks like}
+
+The project succeeds if, on a shared evaluation set, we can show a table in which B0 is fast, cheap, and unsafe; B2 is slower and costlier by a stated factor; and B2's false-refund rate and injection success rate are near zero while action accuracy is at least as high as B0's. The result is the \emph{trade-off curve}, not a demo. If the guardrails turn out to cost more than they save in some regime, that is also a result, and we will report it.
+
+% =====================================================================
+\section{Justification}\label{sec:justification}
+
+\paragraph{The problem is real and costly.} Refunds, returns, and cancellations are the highest-volume, most procedural, and most financially exposed category of support tickets. Automating them is where the operational value lies, and where the cost of error is concrete: money leaves the company, or a legitimate customer is refused.
+
+\paragraph{The naive solution is inadequate in ways that are specific and demonstrable.} \S\ref{sec:background} enumerated five failure modes of a single LLM with tools. Each corresponds to a component in the mandate. The project is therefore not ``LLM plus features''; it is the minimum architecture under which an LLM can be trusted with an action.
+
+\paragraph{The existing landscape does not supply a solution.} Commercial systems are closed and publish no safety evidence (\S\ref{sec:landscape}). Frameworks supply orchestration and protocol plumbing but no domain guardrails. Benchmarks measure capability or safety, not both, and none measures policy-violating financial action under attack (\S\ref{sec:related}).
+
+\paragraph{The gap is at an intersection, which is why it is unfilled.} Each contributing field has a natural stopping point at the edge of its own question. Filling the gap requires building the whole pipeline and measuring it end to end, which is exactly what an ``Implementation + Experiments'' project is positioned to do and what a single-topic paper is not.
+
+\paragraph{The project is feasible, and the result is reusable.} Every component has a mature building block (LangGraph, MCP, standard retrievers, tracing platforms, published defences); the novel work is in the composition, the deterministic guardrails, the evaluation set, and the measurement---a tractable scope for four weeks with a fixed evaluation harness established early. An open, measured reference implementation for policy-governed action agents would be useful to the four sibling projects and to anyone building action-taking agents in a regulated domain.
+
+% =====================================================================
+\section{Open Questions for the Mentor}\label{sec:open}
+
+The following decisions are deliberately \emph{not} made in this report. We would like the mentor's input before committing in the Week-2 design document.
+
+\begin{enumerate}[label=\textbf{Q\arabic*.}]
+  \item \textbf{Data source.} Three candidates: (a) fully synthetic orders, customers, policies, and tickets generated against our own schema---maximum control over edge and adversarial cases, weakest external validity; (b) $\tau$-bench's retail domain (its users, orders, and policy document) extended with our refund and injection scenarios---comparability with published numbers, less freedom; (c) a hybrid, using Bitext for triage utterances and synthetic data for everything else. Which does the mentor prefer, and is comparability with $\tau$-bench valued?
+  \item \textbf{Human-in-the-loop threshold.} Should the auto-approve threshold be a fixed amount, a fraction of order value, a function of customer history, or configurable per policy clause? This determines how escalation precision/recall is scored.
+  \item \textbf{Model choice and budget.} Whether to standardise on one model for all baselines (isolating architecture effects) or to also vary the model (testing H2's model-independence claim). The latter doubles evaluation cost.
+  \item \textbf{Depth of MCP.} A single MCP server for the commerce backend is the minimum. Should the policy store and memory also be MCP servers, to demonstrate a fully protocol-mediated architecture?
+  \item \textbf{Evaluation set size.} We propose 100--200 golden tickets plus an adversarial split of comparable size. Is that sufficient for the mentor's expectations, given that each ticket must be hand-verified for expected action and clause?
+  \item \textbf{Repository.} The project currently sits inside a larger personal repository; we intend to move it to a standalone repository before implementation begins, unless a course-provided location is expected.
+\end{enumerate}
+
+% =====================================================================
+\renewcommand{\bibfont}{\footnotesize}
+\setlength{\bibsep}{1.5pt}
+\bibliographystyle{plainnat}
+\begin{multicols}{2}
+\raggedright
+\bibliography{refs}
+\end{multicols}
+
+\end{document}
