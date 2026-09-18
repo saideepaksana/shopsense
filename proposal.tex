@@ -57,13 +57,11 @@
 \fancyhead[L]{\textit{ShopSense}}
 \fancyhead[R]{\thepage}
 
-\title{\vspace{-1.4cm}\textbf{ShopSense}\\[0pt]
-       \large Customer Care \& Order Operations Assistant --- Proposal}
-\author{
-    Sai Deepak Sana \quad
-    Harshith Peddineni
-}
-\date{September 18, 2026}
+\title{\vspace{-2.4cm}\textbf{ShopSense}\\[6pt]
+       \large Customer Care \& Order Operations Assistant \\[9pt]
+       Sai Deepak Sana \quad Harshith Peddineni}
+\author{}
+\date{}
 
 \begin{document}
 
@@ -78,7 +76,7 @@ E commerce applications generally receive a large number of customer support req
 
 Customer support systems these days are moving from FAQ chatbots to agentic systems that use retrieval to answer questions from company documents. So the next upgrade is an AI agent that can perform actions such as checking an order, cancelling it, creating a return, or requesting a refund.
 
-Main difference here is, an agent is not only answering a question but also changing the state of the system. A wrong answer may frustrate a customer, but a wrong refund or order update can directly affect money and may be difficult to reverse. Therefore, a customer care agent needs to understand the request, check the current state of the order, follow the company policy, and take correct action.
+Main difference here is, an agent is not only answering a question but also changing the state of the system. A wrong answer may frustrate a customer, but a wrong refund or order update can directly affect money and may be difficult to reverse. Therefore, a customer care agent needs to understand the request, check the current state of the order, follow company policy, and take correct action.
 
 % -------------------------------------------------------
 \section*{2. Problem Statement}
@@ -111,13 +109,13 @@ The goal of ShopSense is to build a customer-care assistant that can decide and 
 \subsection*{2.3 Key Challenges}
 
 \textbf{1. The same request can need a different action.}
-A customer's message alone is often not enough to decide what to do. For example, suppose a customer says ``cancel my order.'' If the order has not been shipped, cancellation may be allowed. If it has already been shipped, the system may need to start a return instead. The agent therefore has to first check the order state and then apply the correct policy. The policies will be stored separately from the agent and retrieved when required. The system should also record which policy clause was used for the decision so that the result can be checked later.
+A customer's message alone is often not enough to decide what to do. For example, suppose a customer says ``cancel my order.'' If the order has not been shipped, cancellation may be allowed. If it has already been shipped, the system may need to start a return instead. The agent therefore has to first check the order state and then apply the correct policy. The policies will be stored separately from agent and retrieved when required. The system should also record which policy clause was used for the decision so that the result can be checked later.
 
 \textbf{2. Some actions cannot be easily undone.}
 Actions such as issuing a refund or changing an order are writes to the store system. A mistake in such an action can directly affect the customer. Because of this, write operations should have checks such as user confirmation, authorization, idempotency, and an audit log. A refund should not be executed twice just because the agent retries the same request.
 
 \textbf{3. Customers can make mistakes or give harmful instructions.}
-A customer may misunderstand the order status, give incorrect information, or try to make the agent ignore its policies. The system should not assume that every statement from the customer is correct. In some cases, refusing the request is the correct outcome. Prompt injection is also important because the customer message itself is untrusted input. A useful design is to keep the component that reads the customer message separate from the component that has permission to perform write operations. This follows the idea of separating untrusted input handling from privileged actions. \cite{injection}
+A customer may misunderstand the order status, give incorrect information, or try to make the agent ignore its policies. The system should not assume that every statement from customer is correct. In some cases, refusing the request is correct outcome. Prompt injection is also important because the customer message itself is untrusted input. So design shpuld be something like keeping the component that \textbf{reads} customer message separate from the component that has permission to perform \textbf{write} operations. This follows the idea of separating untrusted input handling from privileged actions. \cite{injection}
 
 \textbf{4. The agent may not behave the same way every time.}
 Even when the customer request and store state are unchanged, an LLM-based agent can sometimes choose different tools or different actions on different runs. This makes reliability an important part of the project. In $\tau$-bench, strong function-calling agents succeeded on less than half of the tasks, and the retail domain had a $\mathrm{pass}^8$ value below 25\%, showing that getting one run correct does not mean the system is reliable across repeated runs. \cite{taubench}
@@ -137,7 +135,7 @@ Even when the customer request and store state are unchanged, an LLM-based agent
 
 Commercial platforms such as Sierra, Intercom Fin, Zendesk AI, and Salesforce Agentforce already provide AI systems for customer support, and in some cases these can perform actions such as managing orders or resolving support issues. \cite{commercial} However, these are closed commercial systems, so their internal architecture and detailed reliability results are not available in enough detail for us to reproduce and compare them in a student project.
 
-A closely related research benchmark is $\tau$-bench. It evaluates an agent by simulating conversations between a user and an AI agent that has access to domain-specific tools and policy guidelines. The final result is checked by comparing the database state produced by the agent with an expected goal state instead of judging only the text response. It also introduces $\mathrm{pass}^k$ to measure how often an agent succeeds across repeated trials. $\tau^2$-bench extends this type of evaluation to settings where both the user and the agent can take actions in the environment. \cite{taubench,tau2} Research on prompt-injection security also shows the need for architectural controls when agents are given access to tools. \cite{injection}
+A closely related research benchmark is $\tau$-bench. It evaluates an agent by simulating conversations between a user and an AI agent that has access to domain-specific tools and policy guidelines. The final result is checked by comparing the database state produced by the agent with an expected goal state instead of judging only the text response. It also introduces $\mathrm{pass}^k$ to measure how often an agent succeeds across repeated trials. $\tau^2$-bench extends this type of evaluation to settings where both the user and the agent can take actions in the environment. \cite{taubench,tau2} Research on prompt-injection security also shows the need for \textbf{architectural controls} when agents are given access to tools. \cite{injection}
 
 The gap we want to study is that these benchmarks mainly measure the reliability of a single agent with a flat tool list, while our project will also test whether a privilege-separated multi-agent architecture can improve that reliability. The component that reads untrusted customer text will not have write tools, so a prompt-injection instruction in the customer message will not directly have the ability to issue a refund.
 
@@ -175,13 +173,11 @@ The main metrics will be:
     \item \textbf{Tool-call efficiency:} number of tool calls required to complete a successful task.
 \end{itemize}
 
+The intended outcome here is measured comparison showing whether privilege separation and explicit policy grounding improve task success, policy compliance, and run to run consistency over a single agent baseline.
+
 \subsection*{4.3 Limitations}
 
 The items listed as out of scope in Section 2.2 are deferred because they would increase the size of the project without directly testing the main research question. The evaluation will also use an LLM-based simulated user rather than real customers. Therefore, the measured results may not fully represent real customer behaviour and should be treated as an upper bound on how the system may perform in practice.
-
-% -------------------------------------------------------
-\section*{5. References}
-% -------------------------------------------------------
 
 \begingroup
 \footnotesize
