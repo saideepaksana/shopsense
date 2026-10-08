@@ -1,0 +1,10 @@
+CREATE TABLE customers (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL);
+CREATE TABLE products (id TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price_minor INTEGER NOT NULL, returnable INTEGER NOT NULL);
+CREATE TABLE orders (id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), status TEXT NOT NULL CHECK (status IN ('placed','shipped','delivered','cancelled','return_requested','returned')), placed_at TEXT NOT NULL, shipped_at TEXT, delivered_at TEXT, total_minor INTEGER NOT NULL);
+CREATE TABLE order_items (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL REFERENCES orders(id), product_id TEXT NOT NULL REFERENCES products(id), qty INTEGER NOT NULL CHECK (qty > 0), unit_price_minor INTEGER NOT NULL);
+CREATE TABLE payments (order_id TEXT PRIMARY KEY REFERENCES orders(id), amount_paid_minor INTEGER NOT NULL, method TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('paid','partially_refunded','refunded')));
+CREATE TABLE returns (id TEXT PRIMARY KEY, order_id TEXT NOT NULL REFERENCES orders(id), reason_code TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('approved','received')), created_at TEXT NOT NULL, idempotency_key TEXT UNIQUE);
+CREATE TABLE refunds (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL REFERENCES orders(id), return_id TEXT REFERENCES returns(id), amount_minor INTEGER NOT NULL CHECK (amount_minor > 0), kind TEXT NOT NULL CHECK (kind IN ('cancellation','return','goodwill')), created_at TEXT NOT NULL, idempotency_key TEXT UNIQUE);
+CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, ts TEXT NOT NULL, customer_id TEXT NOT NULL, event TEXT NOT NULL, intent TEXT, decision TEXT, clause_ids TEXT, detail_json TEXT);
+CREATE TABLE customer_memory (customer_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (customer_id,key));
+CREATE TABLE pending_plans (plan_id TEXT PRIMARY KEY, customer_id TEXT NOT NULL, payload_json TEXT NOT NULL, plan_hash TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','confirmed','rejected')), created_at TEXT NOT NULL);
