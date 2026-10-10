@@ -1,3 +1,5 @@
+from contextlib import closing
+
 from shopsense.agents.executor import execute_plan
 from shopsense.db.connection import connect
 from shopsense.models import Action, Plan
@@ -24,7 +26,7 @@ def test_executor_resolves_return_id_and_is_idempotent(db_path, write_gateway):
     first = execute_plan(plan, "plan-1", write_gateway)
     second = execute_plan(plan, "plan-1", write_gateway)
     assert len(first) == 2 and len(second) == 2
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         assert (
             conn.execute("select count(*) from returns where order_id='ORD-10003'").fetchone()[0]
             == 1

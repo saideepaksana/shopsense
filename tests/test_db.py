@@ -1,9 +1,11 @@
+from contextlib import closing
+
 from shopsense.db import repository
 from shopsense.db.connection import connect
 
 
 def test_seed_counts_and_bundle(db_path):
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         assert conn.execute("select count(*) from customers").fetchone()[0] == 6
         assert conn.execute("select count(*) from products").fetchone()[0] == 9
         assert conn.execute("select count(*) from orders").fetchone()[0] == 17
@@ -14,7 +16,7 @@ def test_seed_counts_and_bundle(db_path):
 
 
 def test_write_integrity_and_idempotency(db_path):
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         first = repository.cancel_order(conn, "ORD-10001", "key-1")
         replay = repository.cancel_order(conn, "ORD-10001", "key-1")
         assert first["ok"] and replay["replayed"] is True
@@ -22,7 +24,7 @@ def test_write_integrity_and_idempotency(db_path):
 
 
 def test_full_refund_updates_payment_and_order(db_path):
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         result = repository.issue_refund(conn, "ORD-10009", "RET-9001", 349900, "full-refund")
         assert result["ok"]
         assert (
@@ -36,7 +38,7 @@ def test_full_refund_updates_payment_and_order(db_path):
 
 
 def test_partial_refund_updates_payment(db_path):
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         result = repository.issue_refund(conn, "ORD-10009", "RET-9001", 100, "partial-refund")
         assert result["ok"]
         assert (

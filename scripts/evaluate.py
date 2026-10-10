@@ -1,9 +1,13 @@
 import argparse
 import json
+import os
 import sys
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+
+os.environ.setdefault("FASTMCP_LOG_LEVEL", "ERROR")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -463,7 +467,7 @@ def _baseline_responses(scenario: Scenario) -> list[str]:
 def _snapshot(db_path: str, order_id: str | None) -> dict:
     if not order_id:
         return {"status": None, "returns": 0, "refunds": 0}
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         order = repository.get_order_bundle(conn, order_id)
     if not order:
         return {"status": None, "returns": 0, "refunds": 0}

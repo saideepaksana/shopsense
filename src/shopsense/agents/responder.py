@@ -8,9 +8,14 @@ def describe_plan(plan, facts, derived) -> str:
             f"Cancel order {order} and refund "
             f"{format_inr(derived.refundable_minor)} to your original payment method."
         )
+    if plan.actions[0].tool.value == "issue_refund":
+        return (
+            f"Refund {format_inr(derived.refundable_minor)} for your approved return "
+            f"{derived.existing_return['id']} on order {order}."
+        )
     return (
-        f"Return order {order} and refund "
-        f"{format_inr(derived.refundable_minor)} to your original payment method."
+        f"Return order {order} and refund {format_inr(derived.refundable_minor)} "
+        "to your original payment method."
     )
 
 
@@ -28,9 +33,10 @@ def _render_order_status(facts) -> str:
     dates = ", ".join(
         f"{key[:-3]} {order[key]}" for key in ("shipped_at", "delivered_at") if order.get(key)
     )
+    date_text = f" {dates}." if dates else ""
     return (
-        f"Order {order['id']} is {order['status']}. Placed {order['placed_at']}. "
-        f"{dates}. Total {format_inr(order['total_minor'])}."
+        f"Order {order['id']} is {order['status']}. Placed {order['placed_at']}."
+        f"{date_text} Total {format_inr(order['total_minor'])}."
     )
 
 

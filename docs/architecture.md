@@ -39,7 +39,7 @@ The raw message is consumed by triage. If the request is a policy question, tria
 
 | Component | Main files | Responsibility and access |
 |---|---|---|
-| Session and graph | `session.py`, `graph.py`, `nodes.py` | Maintain per-chat pending confirmation and prior clarification; route work through LangGraph. |
+| Session and graph | `session.py`, `graph.py`, `nodes.py` | Maintain per-chat pending confirmation and prior clarification; route work through LangGraph. Confirmation accepts case-insensitive yes/no, y/n, and trailing punctuation. |
 | Triage | `agents/triage.py` | Classify untrusted text, extract one unambiguous order ID, classify injection suspicion, normalize policy topic. No gateway. |
 | Read path | `mcp_servers/read_server.py`, `gateway.py` | Fetch orders, order lists, and customer memory. Order lookup is scoped to the logged-in customer. |
 | Facts | `facts.py` | Compute return window, refundable amount, returnability, refund ceiling and refund-frequency facts. Read only. |
@@ -104,7 +104,7 @@ The rules are intentionally centralized in `agents/verifier.py`. The MCP write s
 
 ## Confirmation, idempotency, and failure behavior
 
-The graph saves an approved plan before asking for confirmation. The stored payload includes the plan, intent, and retrieved clause IDs. SHA-256 detects changes to the serialized payload between turns; it is an integrity check, not a keyed signature against an attacker who can rewrite both the payload and its hash in the database.
+The graph saves an approved plan before asking for confirmation. The stored payload includes the plan, intent, and retrieved clause IDs. SHA-256 detects changes to the serialized payload between turns; it is an integrity check, not a keyed signature against an attacker who can rewrite both the payload and its hash in the database. Confirmation accepts case-insensitive yes/no, y/n, and trailing punctuation; longer replies are re-prompted by code without another model call.
 
 On confirmation, the plan is checked again against current facts. Each action receives a SHA-256 idempotency key derived from the pending plan ID and action index. A repeated execution of the same action therefore replays the database result instead of creating a second refund. Tool calls for a multi-action return/refund are separate transactions. If return creation succeeds but a later refund call fails, the return can remain created and the reply reports an execution failure; this is a prototype limitation.
 

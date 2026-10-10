@@ -17,11 +17,11 @@ python -m shopsense.cli --customer C1
 pytest
 ```
 
-Try C1 / `ORD-10001` for cancellation, C1 / `ORD-10003` for a return, and C3 / `ORD-10009` for an approved-return refund.
+Confirmation accepts `yes`/`no` in any case, `y`/`n`, and trailing punctuation (for example, `Yes.`). Longer messages are re-prompted without an LLM call. Try C1 / `ORD-10001` for cancellation, C1 / `ORD-10003` for a return, and C3 / `ORD-10009` for an approved-return refund.
 
 ## Architecture and design guide
 
-For a detailed explanation of the graph, trust boundaries, verifier rules, database model, confirmation lifecycle, and evaluation, see the [PDF design guide](docs/shopsense_design.pdf) or its [LaTeX source](docs/shopsense_design.tex). The shorter [architecture overview](docs/architecture.md) is also available in Markdown.
+For a detailed explanation of the graph, trust boundaries, verifier rules, database model, confirmation lifecycle, and evaluation, see the [PDF design guide](docs/shopsense_design.pdf) or its [LaTeX source](docs/shopsense_design.tex). The shorter [architecture overview](docs/architecture.md) is also available in Markdown. Project notes are in [understanding](docs/understanding.md), [progress](docs/progress.pdf) and [proposal](docs/proposal.pdf).
 
 ## Local scripted evaluation
 

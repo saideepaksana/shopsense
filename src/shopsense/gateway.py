@@ -2,6 +2,7 @@ import asyncio
 import json
 
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 
 class _Gateway:
@@ -75,7 +76,10 @@ class _Gateway:
 
     def _call(self, tool: str, args: dict):
         self.call_count += 1
-        return asyncio.run(self._async_call(tool, args))
+        try:
+            return asyncio.run(self._async_call(tool, args))
+        except ToolError as exc:
+            return {"ok": False, "error": "invalid_arguments", "detail": str(exc)[:160]}
 
 
 class ReadGateway(_Gateway):

@@ -1,12 +1,15 @@
 import json
 import time
+from email.utils import parsedate_to_datetime
 from typing import Protocol, TypeVar
 
 from openai import (
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
     InternalServerError,
     OpenAI,
+    OpenAIError,
     RateLimitError,
 )
 from pydantic import BaseModel, ValidationError
@@ -42,6 +45,7 @@ class OpenAICompatibleLLM:
         self.temperature = temperature
         self._last_call_at = None
         self._json_mode_rejected = False
+        self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
     def complete(self, system, user):
         self._wait_for_min_interval()
@@ -73,30 +77,77 @@ class OpenAICompatibleLLM:
         for attempt in range(5):
             try:
                 response = self.client.chat.completions.create(**args)
+                usage = getattr(response, "usage", None)
+                self.last_usage = {
+                    "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                    "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+                }
                 return response.choices[0].message.content or ""
-            except Exception as exc:
+            except OpenAIError as exc:
                 if self._is_json_format_error(exc, args):
                     self._json_mode_rejected = True
                     args.pop("response_format", None)
                     continue
-                if not isinstance(
-                    exc,
-                    (
-                        RateLimitError,
-                        APIConnectionError,
-                        APITimeoutError,
-                        InternalServerError,
-                    ),
+                if (
+                    isinstance(exc, APIStatusError)
+                    and exc.status_code != 429
+                    and not isinstance(exc, InternalServerError)
                 ):
-                    raise
+                    detail = _error_detail(exc)
+                    raise LLMUnavailableError(
+                        f"HTTP {exc.status_code}: {detail}"
+                    ) from exc
+                if isinstance(exc, RateLimitError) and self._quota_exhausted(exc):
+                    raise LLMUnavailableError("HTTP 429: provider quota exhausted") from exc
+                retryable = (
+                    RateLimitError,
+                    APIConnectionError,
+                    APITimeoutError,
+                    InternalServerError,
+                )
+                if not isinstance(exc, retryable):
+                    raise LLMUnavailableError(
+                        f"{type(exc).__name__}: {_error_detail(exc)}"
+                    ) from exc
                 if attempt == 4:
-                    raise LLMUnavailableError(str(exc)) from exc
-                time.sleep(2 ** (attempt + 1))
+                    detail = _error_detail(exc)
+                    raise LLMUnavailableError(f"{type(exc).__name__}: {detail}") from exc
+                delay = self._retry_delay(exc, attempt)
+                time.sleep(delay)
         raise LLMUnavailableError("LLM request failed")
 
     @staticmethod
     def _is_json_format_error(exc, args):
-        return "response_format" in args and getattr(exc, "status_code", None) == 400
+        message = str(exc).lower()
+        unsupported = "not supported" in message or "unsupported" in message
+        return (
+            "response_format" in args
+            and getattr(exc, "status_code", None) == 400
+            and ("response_format" in message or "json mode" in message)
+            and unsupported
+        )
+
+    @staticmethod
+    def _quota_exhausted(exc):
+        message = str(exc).lower()
+        daily = any(term in message for term in ("daily", "per day", "per-day"))
+        quota = any(term in message for term in ("quota", "limit", "exhaust"))
+        return daily and quota
+
+    @staticmethod
+    def _retry_delay(exc, attempt):
+        headers = getattr(getattr(exc, "response", None), "headers", {}) or {}
+        retry_after = headers.get("retry-after")
+        try:
+            if retry_after is not None:
+                try:
+                    delay = float(retry_after)
+                except ValueError:
+                    delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+                return min(60, max(0, delay))
+            return 2 ** (attempt + 1)
+        except (TypeError, ValueError):
+            return 2 ** (attempt + 1)
 
 
 class FakeLLM:
@@ -117,6 +168,10 @@ class LLMOutputError(Exception):
 
 class LLMUnavailableError(Exception):
     pass
+
+
+def _error_detail(exc):
+    return (str(exc).splitlines() or [type(exc).__name__])[0][:180]
 
 
 def complete_json(llm, system, user, model, retries):

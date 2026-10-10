@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from contextlib import closing
 from typing import Callable, TypedDict
 
 from shopsense import audit, memory
@@ -11,8 +12,9 @@ from shopsense.agents.triage import triage_message
 from shopsense.agents.verifier import verify
 from shopsense.db import repository
 from shopsense.db.connection import connect
-from shopsense.facts import derive, load_facts
-from shopsense.models import Intent, Plan, PolicyTopic
+from shopsense.facts import Derived, Facts, derive, load_facts
+from shopsense.models import Intent, IntentType, Plan, PolicyTopic
+from shopsense.policy.loader import Clause
 
 POLICY_QUERIES = {
     PolicyTopic.general: "general policy customer authorization",
@@ -36,9 +38,9 @@ class State(TypedDict, total=False):
     pending_plan_id: str | None
     confirmation: str | None
     intent: Intent
-    facts: object
-    derived: object
-    clauses: list
+    facts: Facts
+    derived: Derived
+    clauses: list[Clause]
     plan: Plan
     violations: list[str]
     replans: int
@@ -105,14 +107,44 @@ class PipelineNodes:
     def retrieve_policy(self, state: State) -> dict:
         intent = state["intent"]
         order = state["facts"].order
+        derived = derive(state["facts"], intent, self.deps.settings)
         query = self._policy_query(state, order)
         limit = 3 if intent.intent.value == "policy_question" else None
         clauses = self.deps.retriever.retrieve(intent.intent, query, limit)
+        self._add_mandatory_clauses(intent, order, derived, clauses)
         self._add_authorization_clause(intent, order, clauses)
         return {
-            "derived": derive(state["facts"], intent, self.deps.settings),
+            "derived": derived,
             "clauses": clauses,
         }
+
+    def _add_mandatory_clauses(self, intent, order, derived, clauses) -> None:
+        if intent.intent not in {IntentType.return_item, IntentType.refund_request}:
+            return
+        required = set()
+        if derived.exceeds_ceiling:
+            required.add("REF-3")
+        if derived.over_refund_limit:
+            required.add("REF-4")
+        if derived.has_nonreturnable_item:
+            required.add("RET-2")
+        if derived.existing_return:
+            required.update({"RET-4", "REF-5"})
+            if derived.refundable_minor == 0:
+                required.add("REF-6")
+        if order and order["status"] != "delivered":
+            required.add("RET-4")
+        if not derived.within_window:
+            required.add("RET-1")
+            if intent.reason_code and intent.reason_code.value in {
+                "damaged", "wrong_item", "not_as_described"
+            }:
+                required.add("RET-3")
+        existing_ids = {clause.id for clause in clauses}
+        clauses.extend(
+            clause for clause in self.deps.retriever.clauses
+            if clause.id in required - existing_ids
+        )
 
     def _policy_query(self, state: State, order: dict | None) -> str:
         intent = state["intent"]
@@ -179,7 +211,7 @@ class PipelineNodes:
 
     def request_confirmation(self, state: State) -> dict:
         plan_id, raw, plan_hash = self._pending_payload(state)
-        with connect(self.deps.db_path) as conn:
+        with closing(connect(self.deps.db_path)) as conn, conn:
             repository.save_pending_plan(conn, plan_id, state["customer_id"], raw, plan_hash)
         return {"pending_plan_id": plan_id, "outcome": "awaiting_confirmation"}
 
@@ -194,7 +226,7 @@ class PipelineNodes:
         return plan_id, raw, hashlib.sha256(raw.encode()).hexdigest()
 
     def load_pending(self, state: State) -> dict:
-        with connect(self.deps.db_path) as conn:
+        with closing(connect(self.deps.db_path)) as conn, conn:
             row = repository.get_pending_plan(conn, state["pending_plan_id"])
         if not self._pending_is_valid(row, state):
             return {"outcome": "stale", "intent": Intent(intent="unclear")}
@@ -213,7 +245,7 @@ class PipelineNodes:
         )
 
     def _reject_pending(self, state, row, intent, payload) -> dict:
-        with connect(self.deps.db_path) as conn:
+        with closing(connect(self.deps.db_path)) as conn, conn:
             repository.set_pending_status(conn, row["plan_id"], "rejected")
         self._record(state, "plan_rejected", intent)
         return {
@@ -271,7 +303,7 @@ class PipelineNodes:
         return {"executed": results, "outcome": outcome}
 
     def _confirm_pending(self, state) -> None:
-        with connect(self.deps.db_path) as conn:
+        with closing(connect(self.deps.db_path)) as conn, conn:
             repository.set_pending_status(conn, state["pending_plan_id"], "confirmed")
         self._record(state, "plan_confirmed")
 

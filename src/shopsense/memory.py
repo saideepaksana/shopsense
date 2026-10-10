@@ -5,7 +5,7 @@ from shopsense.db.connection import connect
 
 
 def record_outcome(db_path: str, customer_id: str, intent, outcome: str) -> None:
-    with closing(connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn, conn:
         old = repository.get_memory(conn, customer_id)
         repository.set_memory(conn, customer_id, "last_intent", intent.intent.value)
         repository.set_memory(conn, customer_id, "last_outcome", outcome)
@@ -20,7 +20,7 @@ def record_outcome(db_path: str, customer_id: str, intent, outcome: str) -> None
 
 
 def increment(db_path: str, customer_id: str, key: str) -> None:
-    with closing(connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn, conn:
         old = repository.get_memory(conn, customer_id)
         value = int(old.get(key, "0")) + 1
         repository.set_memory(conn, customer_id, key, str(value))

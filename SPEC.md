@@ -2,7 +2,7 @@
 
 This file is the single source of truth. Follow it literally. Do not add features, files, dependencies, CLI flags or abstractions that are not written here. If something is ambiguous, pick the simplest option, and mention the choice in your end-of-phase summary (never in code comments).
 
-The work is split into phases (see PHASE_PROMPTS.md). Implement only the phase you are asked for. Every phase ends with passing `pytest`.
+Implement only the phase you are asked for. Every phase ends with passing `pytest`.
 
 ---
 
@@ -105,7 +105,6 @@ The LLM is used in exactly two places: `triage` and `plan`. Everything else is d
 shopsense/
   README.md
   SPEC.md
-  PHASE_PROMPTS.md
   pyproject.toml
   .gitignore
   .env.example

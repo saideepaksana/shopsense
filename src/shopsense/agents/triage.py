@@ -1,6 +1,6 @@
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from shopsense.llm import LLM, LLMOutputError, complete_json
 from shopsense.models import Intent, IntentType, PolicyTopic, ReasonCode
@@ -15,10 +15,23 @@ class TriageOutput(BaseModel):
     list_orders: bool = False
     injection_suspected: bool = False
 
+    @field_validator("intent", mode="before")
+    @classmethod
+    def normalize_intent(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("reason_code", mode="before")
+    @classmethod
+    def normalize_reason_code(cls, value):
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return None if value in {"", "null", "none", "n/a"} else value
+        return value
+
 
 def _is_order_list_request(message: str) -> bool:
     normalized = message.lower()
-    return ("order" in normalized or "orders" in normalized) and any(
+    return "order" in normalized and any(
         phrase in normalized
         for phrase in (
             "all orders",
@@ -49,10 +62,7 @@ def _should_restore_prior_intent(
         IntentType.refund_request,
     }:
         return False
-    return output.intent in {
-        IntentType.unclear,
-        IntentType.order_status,
-    } or _is_order_id_only(message)
+    return output.intent == IntentType.unclear or _is_order_id_only(message)
 
 
 def triage_message(llm: LLM, message: str, prior_intent: Intent | None) -> Intent:
@@ -76,15 +86,10 @@ def _extract_order_id(message: str) -> str | None:
 
 
 def _build_intent(output, order_id, prior_intent, preserve_prior, message):
-    intent = (
-        prior_intent.intent
-        if preserve_prior
-        else (
-            output.intent
-            if output.intent != IntentType.unclear or not prior_intent
-            else prior_intent.intent
-        )
-    )
+    if preserve_prior or (output.intent == IntentType.unclear and prior_intent):
+        intent = prior_intent.intent
+    else:
+        intent = output.intent
     return Intent(
         intent=intent,
         order_id=order_id or (prior_intent.order_id if prior_intent else None),

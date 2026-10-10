@@ -19,6 +19,21 @@ def _one(conn, query, parameters=()):
     return dict(row) if row else None
 
 
+def get_customer(conn, customer_id: str) -> dict | None:
+    return _one(conn, "SELECT id,name FROM customers WHERE id=?", (customer_id,))
+
+
+def list_audit_events(conn, customer_id: str, limit: int = 10) -> list[dict]:
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT ts,event,intent,decision,clause_ids FROM audit_log "
+            "WHERE customer_id=? ORDER BY id DESC LIMIT ?",
+            (customer_id, limit),
+        )
+    ]
+
+
 def get_order_bundle(conn, order_id):
     order = _one(conn, "SELECT * FROM orders WHERE id=?", (order_id,))
     if not order:

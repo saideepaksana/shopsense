@@ -15,7 +15,7 @@ def record(
     clause_ids=(),
     detail=None,
 ):
-    with closing(connect(db_path)) as conn:
+    with closing(connect(db_path)) as conn, conn:
         repository.insert_audit(
             conn,
             run_id,

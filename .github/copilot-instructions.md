@@ -26,7 +26,7 @@ Structure:
 - Type hints on every function signature. Use pydantic models or dataclasses for structured data crossing module boundaries.
 - Constants and thresholds live in `config.py`; no magic numbers in logic.
 - Descriptive snake_case names. Nouns for data, verbs for functions.
-- No catch-all `except Exception` except at the one boundary SPEC.md names (the evaluation runner). No silent `pass`. No `print` outside `cli.py`, `scripts/` and the evaluation `__main__.py`.
+- No catch-all `except Exception` except at the evaluation runner and the CLI chat-loop boundary. No silent `pass`. No `print` outside `cli.py`, `scripts/` and the evaluation `__main__.py`.
 - Imports sorted, none unused.
 - Never print, log or store the API key or the contents of `.env`.
 

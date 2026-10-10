@@ -89,7 +89,8 @@ def _v7(plan, settings) -> list[str]:
         "V7_OVER_CEILING"
         for action in plan.actions
         if action.tool == ToolName.issue_refund
-        and action.args.get("amount_minor", 0) > settings.refund_ceiling_minor
+        and type(action.args.get("amount_minor")) is int
+        and action.args.get("amount_minor") > settings.refund_ceiling_minor
     ]
 
 

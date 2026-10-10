@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from pydantic import BaseModel
 
@@ -42,6 +43,7 @@ class _Message:
 class _Response:
     def __init__(self):
         self.choices = [type("Choice", (), {"message": _Message()})()]
+        self.usage = type("Usage", (), {"prompt_tokens": 12, "completion_tokens": 4})()
 
 
 class _Completions:
@@ -63,7 +65,7 @@ class _Client:
 
 
 def test_llm_retries_and_min_interval(monkeypatch):
-    class RetryError(Exception):
+    class RetryError(llm_module.OpenAIError):
         pass
 
     monkeypatch.setattr(llm_module, "RateLimitError", RetryError)
@@ -96,7 +98,7 @@ def test_llm_enforces_min_interval(monkeypatch):
 
 
 def test_llm_permanent_failure_raises_unavailable(monkeypatch):
-    class RetryError(Exception):
+    class RetryError(llm_module.OpenAIError):
         pass
 
     monkeypatch.setattr(llm_module, "RateLimitError", RetryError)
@@ -109,16 +111,33 @@ def test_llm_permanent_failure_raises_unavailable(monkeypatch):
 
 
 def test_json_mode_falls_back_after_bad_request():
-    class BadRequest(Exception):
+    class BadRequest(llm_module.OpenAIError):
         status_code = 400
 
-    completions = _Completions([BadRequest()])
+    completions = _Completions([BadRequest("response_format is not supported")])
     llm = OpenAICompatibleLLM("", "", "model", True, client=_Client(completions))
     assert llm.complete("", "") == '{"ok": true}'
     assert "response_format" in completions.calls[0]
     assert "response_format" not in completions.calls[1]
     assert llm.complete("", "") == '{"ok": true}'
     assert "response_format" not in completions.calls[2]
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 413, 422])
+def test_non_retryable_provider_errors_become_unavailable(status):
+    response = httpx.Response(
+        status,
+        request=httpx.Request("POST", "https://provider.example/chat"),
+    )
+    error = llm_module.APIStatusError(
+        f"provider rejected request with {status}", response=response, body={}
+    )
+    llm = OpenAICompatibleLLM(
+        "", "secret-key", "model", False, client=_Client(_Completions([error]))
+    )
+
+    with pytest.raises(LLMUnavailableError, match=f"HTTP {status}"):
+        llm.complete("", "")
 
 
 def test_llm_uses_configured_temperature():
@@ -135,11 +154,22 @@ def test_metered_llm_tracks_character_usage():
     metered = MeteredLLM(fake)
 
     assert metered.complete("system", "user") == "answer"
-    assert metered.usage() == {
-        "calls": 1,
-        "prompt_characters": 10,
-        "completion_characters": 6,
-    }
+    usage = metered.usage()
+    assert usage["calls"] == 1
+    assert usage["prompt_characters"] == 10
+    assert usage["completion_characters"] == 6
+    assert usage["llm_milliseconds"] >= 0
+    assert usage["prompt_tokens"] == usage["completion_tokens"] == 0
+
+
+def test_metered_llm_tracks_provider_tokens():
+    llm = OpenAICompatibleLLM("", "", "model", False, client=_Client(_Completions()))
+    metered = MeteredLLM(llm)
+
+    metered.complete("system", "user")
+
+    assert metered.usage()["prompt_tokens"] == 12
+    assert metered.usage()["completion_tokens"] == 4
 
 
 def test_action_coerces_numeric_amount():
@@ -150,3 +180,19 @@ def test_action_coerces_numeric_amount():
 def test_action_rejects_boolean_amount():
     with pytest.raises(ValueError, match="amount_minor must be an integer"):
         Action.model_validate({"tool": "issue_refund", "args": {"amount_minor": True}})
+
+
+@pytest.mark.parametrize("amount", ["3499.00", "Rs 3499", "-5"])
+def test_action_rejects_non_integer_amount(amount):
+    with pytest.raises(ValueError, match="amount_minor must be an integer paise value"):
+        Action.model_validate({"tool": "issue_refund", "args": {"amount_minor": amount}})
+
+
+def test_model_output_enum_values_are_normalized():
+    from shopsense.agents.triage import TriageOutput
+    from shopsense.models import Plan
+
+    assert Plan.model_validate({"decision": "Approve"}).decision.value == "approve"
+    assert Action.model_validate({"tool": "Issue_Refund", "args": {}}).tool.value == "issue_refund"
+    triage = TriageOutput.model_validate({"intent": "Cancel_Order", "reason_code": "null"})
+    assert triage.reason_code is None

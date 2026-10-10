@@ -1,3 +1,4 @@
+from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
 
@@ -63,7 +64,7 @@ def seed(db_path):
         path.unlink()
     init_db(db_path)
     prices = {product[0]: product[3] for product in PRODUCTS}
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         _insert_customers(conn)
         conn.executemany("INSERT INTO products VALUES(?,?,?,?,?)", PRODUCTS)
         _insert_orders(conn, prices)

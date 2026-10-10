@@ -57,3 +57,18 @@ def test_baseline_scopes_read_tools_to_customer(read_gateway, write_gateway):
 
     assert '"customer_id": "C1"' in llm.calls[1][1]
     assert '"customer_id": "C2"' not in llm.calls[1][1]
+
+
+def test_baseline_recovers_from_invalid_tool_arguments(read_gateway, write_gateway):
+    llm = FakeLLM(
+        [
+            '{"action":"call_tool","tool":"issue_refund","args":{"order_id":"ORD-10009",'
+            '"return_id":"RET-9001","amount_minor":"lots"}}',
+            '{"action":"reply","text":"I could not process those tool arguments."}',
+        ]
+    )
+    session = BaselineSession("C3", llm, read_gateway, write_gateway, "policy", 4)
+
+    reply = session.send("refund the return")
+
+    assert reply.text == "I could not process those tool arguments."

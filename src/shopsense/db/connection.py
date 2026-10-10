@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -11,5 +12,5 @@ def connect(db_path):
 
 def init_db(db_path):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         conn.executescript(Path(__file__).with_name("schema.sql").read_text())

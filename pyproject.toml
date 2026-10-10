@@ -6,16 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "shopsense"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2", "langgraph", "fastmcp[client,server]==3.3.1", "mcp==1.24.0", "rank-bm25", "openai", "python-dotenv"]
+dependencies = ["pydantic>=2", "langgraph", "fastmcp==3.3.1", "mcp==1.24.0", "rank-bm25", "openai", "python-dotenv"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 
 [tool.ruff]

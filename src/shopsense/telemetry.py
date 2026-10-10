@@ -38,19 +38,33 @@ class MeteredLLM:
         self.calls = 0
         self.prompt_characters = 0
         self.completion_characters = 0
+        self.llm_milliseconds = 0.0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
     def complete(self, system: str, user: str) -> str:
         self.calls += 1
         self.prompt_characters += len(system) + len(user)
-        response = self.llm.complete(system, user)
+        started = time.perf_counter()
+        try:
+            response = self.llm.complete(system, user)
+        finally:
+            duration_ms = (time.perf_counter() - started) * 1000
+            self.llm_milliseconds += duration_ms
+            if self.recorder:
+                self.recorder.record("llm.complete", duration_ms)
         self.completion_characters += len(response)
-        if self.recorder:
-            self.recorder.record("llm.complete", 0)
+        usage = getattr(self.llm, "last_usage", {})
+        self.prompt_tokens += usage.get("prompt_tokens", 0)
+        self.completion_tokens += usage.get("completion_tokens", 0)
         return response
 
-    def usage(self) -> dict[str, int]:
+    def usage(self) -> dict[str, int | float]:
         return {
             "calls": self.calls,
             "prompt_characters": self.prompt_characters,
             "completion_characters": self.completion_characters,
+            "llm_milliseconds": self.llm_milliseconds,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
         }

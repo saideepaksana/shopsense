@@ -1,7 +1,11 @@
+import os
 import sys
 import tempfile
 import time
+from contextlib import closing
 from pathlib import Path
+
+os.environ.setdefault("FASTMCP_LOG_LEVEL", "ERROR")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -62,7 +66,7 @@ CONVERSATIONS = [
 
 
 def check_state(db_path, order_id, status, amount, kind):
-    with connect(db_path) as conn:
+    with closing(connect(db_path)) as conn, conn:
         order = repository.get_order_bundle(conn, order_id)
     if order["status"] != status:
         return False
