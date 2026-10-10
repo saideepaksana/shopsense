@@ -15,6 +15,13 @@ def test_scenarios_cover_proposal_categories():
     assert len({case.name for case in cases}) == len(cases)
 
 
+def test_return_scenarios_use_dynamic_id_only_in_guarded_plans():
+    scenario = next(case for case in scenarios() if case.name == "return_delivered_1")
+
+    assert scenario.plan["actions"][1]["args"]["return_id"] == "$return_id"
+    assert scenario.baseline_tools[1]["args"]["return_id"] == "RET-9005"
+
+
 def test_pass_k_groups_repeated_trials_by_scenario():
     rows = [
         {

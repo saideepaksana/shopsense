@@ -242,6 +242,8 @@ The offline runner is \path{scripts/evaluate.py}.
 
 Its JSON output is \path{reports/phase1-scripted-evaluation.json}. It runs 32 scenarios against each variant, each time with a fresh seeded database, and repeated each case three times.
 
+Return fixtures use \texttt{\$return\_id} in guarded plans and the concrete generated ID in baseline tool calls; a regression test protects this interface difference.
+
 \begin{center}
 \begin{tabular}{lrr}
 \toprule

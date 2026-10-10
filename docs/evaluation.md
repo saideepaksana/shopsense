@@ -6,6 +6,8 @@
 
 The same scenario request and proposed action profile are used to exercise both designs. The guarded path checks plans with V0-V10 and requests a separate confirmation turn before a valid write. The baseline loop has the same MCP read/write tools and policy text, but does not get a code-enforced verifier or confirmation gate. These baseline actions are deliberately scripted to exercise the architectural difference; this is not an LLM-generated head-to-head experiment.
 
+Return scenarios represent the generated return ID differently at each interface: the guarded planner must use the `$return_id` placeholder so the executor can pass the ID created by the first action to the refund action; the baseline calls tools directly and uses the known seeded ID returned by its scripted tool sequence. An earlier shared fixture used the baseline's concrete ID in guarded plans, causing two valid return scenarios to be rejected by verifier rule V10. The fixtures were separated and a regression test now checks the distinction.
+
 ## Metrics
 
 | Metric | Definition |
