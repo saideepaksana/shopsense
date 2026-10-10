@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CLI_AUDIT_LIMIT = 10
+SIMULATOR_TEMPERATURE = 0.7
+SIMULATED_MAX_TURNS = 8
 
 
 @dataclass(frozen=True)

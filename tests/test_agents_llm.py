@@ -3,7 +3,8 @@ from shopsense.agents.triage import triage_message
 from shopsense.agents.verifier import verify
 from shopsense.facts import Derived, load_facts
 from shopsense.llm import FakeLLM
-from shopsense.models import Intent
+from shopsense.models import Intent, IntentType
+from shopsense.nodes import PipelineNodes
 
 
 def test_triage_regex_and_prior_intent():
@@ -43,6 +44,48 @@ def test_triage_normalizes_policy_question_topic():
     )
 
     assert intent.policy_topic.value == "return_window"
+
+
+def test_unclear_order_list_intent_becomes_order_status():
+    intent = triage_message(
+        FakeLLM(['{"intent":"unclear","list_orders":true}']),
+        "show me all my orders",
+        None,
+    )
+
+    assert intent.intent == IntentType.order_status
+    assert intent.list_orders
+
+
+def test_policy_topic_from_triage_selects_refund_method_clauses(deps_factory):
+    deps = deps_factory(FakeLLM([]))
+    intent = triage_message(
+        FakeLLM(['{"intent":"policy_question","policy_topic":"refund_method"}']),
+        "Where does my refund go?",
+        None,
+    )
+    facts = load_facts(deps.read_gateway, "C1", intent)
+    clauses = PipelineNodes(deps).retrieve_policy({"intent": intent, "facts": facts})["clauses"]
+
+    assert intent.intent == IntentType.policy_question
+    assert intent.policy_topic.value == "refund_method"
+    assert "REF-1" in {clause.id for clause in clauses}
+
+
+def test_unknown_policy_topic_falls_back_to_keyword_mapping():
+    intent = triage_message(
+        FakeLLM(['{"intent":"policy_question","policy_topic":"not-a-topic"}']),
+        "What is the return window?",
+        None,
+    )
+
+    assert intent.policy_topic.value == "return_window"
+
+
+def test_order_specific_refund_remains_refund_request():
+    intent = triage_message(FakeLLM(['{"intent":"refund_request"}']), "refund ORD-10009", None)
+
+    assert intent.intent == IntentType.refund_request
 
 
 def test_planner_has_no_raw_message_and_fail_closes(read_gateway, settings):

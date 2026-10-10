@@ -31,6 +31,6 @@ Run the 32-scenario comparison with isolated seeded databases and no model or ne
 python scripts/evaluate.py --trials 3 --output data/evaluation.json
 ```
 
-The report includes task success, policy-violation rate, injection resistance, pass^k, and tool-call efficiency for the guarded pipeline and single-agent baseline. This scripted suite measures deterministic architecture behavior; it does not estimate variability from a live LLM. `python scripts/live_smoke.py` remains available for provider-backed smoke checks.
+The scripted suite measures deterministic architecture behavior. Use `python scripts/live_eval.py` for provider-backed pipeline and baseline evaluation; check your provider's usage limits before running all scenarios.
 
 Limitations: mock payments, English only, whole-order returns only, and LLM behavior must be evaluated with scripted scenarios.

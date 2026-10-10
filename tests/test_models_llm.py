@@ -140,6 +140,45 @@ def test_non_retryable_provider_errors_become_unavailable(status):
         llm.complete("", "")
 
 
+def _tool_use_failed_error():
+    response = httpx.Response(
+        400,
+        request=httpx.Request("POST", "https://provider.example/chat"),
+    )
+    return llm_module.APIStatusError(
+        "tool call rejected",
+        response=response,
+        body={"error": {"code": "tool_use_failed", "message": "model called a tool"}},
+    )
+
+
+def test_tool_use_failed_retries_as_malformed_json():
+    class Output(BaseModel):
+        ok: bool
+
+    completions = _Completions([_tool_use_failed_error()])
+    llm = OpenAICompatibleLLM("", "", "model", False, client=_Client(completions))
+
+    result = complete_json(llm, "system", "first request", Output, 1)
+
+    assert result.ok
+    assert len(completions.calls) == 2
+    assert "previous reply was invalid" in completions.calls[1]["messages"][1]["content"]
+
+
+def test_persistent_tool_use_failed_ends_as_output_error():
+    class Output(BaseModel):
+        ok: bool
+
+    completions = _Completions([_tool_use_failed_error(), _tool_use_failed_error()])
+    llm = OpenAICompatibleLLM("", "", "model", False, client=_Client(completions))
+
+    with pytest.raises(LLMOutputError):
+        complete_json(llm, "system", "request", Output, 1)
+
+    assert len(completions.calls) == 2
+
+
 def test_llm_uses_configured_temperature():
     completions = _Completions()
     llm = OpenAICompatibleLLM("", "", "model", False, temperature=0.7, client=_Client(completions))

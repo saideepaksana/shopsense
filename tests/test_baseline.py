@@ -17,6 +17,15 @@ def test_baseline_tool_then_reply(read_gateway, write_gateway):
     assert reply.tool_calls == 1
 
 
+def test_baseline_prompt_disables_native_function_calling(read_gateway, write_gateway):
+    session = BaselineSession("C1", FakeLLM([]), read_gateway, write_gateway, "policy", 1)
+
+    assert (
+        "You have no native function-calling interface; call tools only through the JSON action."
+        in session._system_prompt()
+    )
+
+
 def test_baseline_max_steps(read_gateway, write_gateway):
     session = BaselineSession(
         "C1",

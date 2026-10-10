@@ -14,6 +14,8 @@ from openai import (
 )
 from pydantic import BaseModel, ValidationError
 
+from shopsense.config import SIMULATOR_TEMPERATURE
+
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -46,6 +48,9 @@ class OpenAICompatibleLLM:
         self._last_call_at = None
         self._json_mode_rejected = False
         self.last_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self.calls = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
 
     def complete(self, system, user):
         self._wait_for_min_interval()
@@ -59,6 +64,13 @@ class OpenAICompatibleLLM:
             if remaining > 0:
                 time.sleep(remaining)
         self._last_call_at = time.monotonic()
+
+    def usage(self):
+        return {
+            "calls": self.calls,
+            "prompt_tokens": self.total_prompt_tokens,
+            "completion_tokens": self.total_completion_tokens,
+        }
 
     def _build_request(self, system, user):
         args = {
@@ -76,27 +88,30 @@ class OpenAICompatibleLLM:
     def _send_with_retries(self, args):
         for attempt in range(5):
             try:
+                self.calls += 1
                 response = self.client.chat.completions.create(**args)
                 usage = getattr(response, "usage", None)
                 self.last_usage = {
                     "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
                     "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
                 }
+                self.total_prompt_tokens += self.last_usage["prompt_tokens"]
+                self.total_completion_tokens += self.last_usage["completion_tokens"]
                 return response.choices[0].message.content or ""
             except OpenAIError as exc:
                 if self._is_json_format_error(exc, args):
                     self._json_mode_rejected = True
                     args.pop("response_format", None)
                     continue
+                if self._is_tool_use_failed(exc):
+                    raise LLMMalformedOutput(_error_detail(exc)) from exc
                 if (
                     isinstance(exc, APIStatusError)
                     and exc.status_code != 429
                     and not isinstance(exc, InternalServerError)
                 ):
                     detail = _error_detail(exc)
-                    raise LLMUnavailableError(
-                        f"HTTP {exc.status_code}: {detail}"
-                    ) from exc
+                    raise LLMUnavailableError(f"HTTP {exc.status_code}: {detail}") from exc
                 if isinstance(exc, RateLimitError) and self._quota_exhausted(exc):
                     raise LLMUnavailableError("HTTP 429: provider quota exhausted") from exc
                 retryable = (
@@ -126,6 +141,19 @@ class OpenAICompatibleLLM:
             and ("response_format" in message or "json mode" in message)
             and unsupported
         )
+
+    @staticmethod
+    def _is_tool_use_failed(exc):
+        if getattr(exc, "status_code", None) != 400:
+            return False
+        body = getattr(exc, "body", None)
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        details = (
+            " ".join(str(value) for value in (error.get("code"), error.get("message")) if value)
+            if isinstance(error, dict)
+            else str(error)
+        )
+        return "tool_use_failed" in f"{details} {exc}".lower()
 
     @staticmethod
     def _quota_exhausted(exc):
@@ -163,6 +191,10 @@ class FakeLLM:
 
 
 class LLMOutputError(Exception):
+    pass
+
+
+class LLMMalformedOutput(ValueError):
     pass
 
 
@@ -205,4 +237,18 @@ def build_llm(settings):
         settings.llm_min_interval_seconds,
         settings.llm_timeout_seconds,
         settings.llm_temperature,
+    )
+
+
+def build_simulator_llm(settings):
+    if not settings.llm_api_key or not settings.llm_model:
+        raise RuntimeError("LLM_API_KEY and LLM_MODEL must be set")
+    return OpenAICompatibleLLM(
+        settings.llm_base_url,
+        settings.llm_api_key,
+        settings.llm_model,
+        settings.llm_json_mode,
+        settings.llm_min_interval_seconds,
+        settings.llm_timeout_seconds,
+        SIMULATOR_TEMPERATURE,
     )

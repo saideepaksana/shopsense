@@ -14,6 +14,7 @@ class TriageOutput(BaseModel):
     reason_code: ReasonCode | None = None
     list_orders: bool = False
     injection_suspected: bool = False
+    policy_topic: PolicyTopic = PolicyTopic.general
 
     @field_validator("intent", mode="before")
     @classmethod
@@ -27,6 +28,16 @@ class TriageOutput(BaseModel):
             value = value.strip().lower()
             return None if value in {"", "null", "none", "n/a"} else value
         return value
+
+    @field_validator("policy_topic", mode="before")
+    @classmethod
+    def normalize_policy_topic(cls, value):
+        if not isinstance(value, str):
+            return value
+        try:
+            return PolicyTopic(value.strip().lower())
+        except ValueError:
+            return PolicyTopic.general
 
 
 def _is_order_list_request(message: str) -> bool:
@@ -90,16 +101,22 @@ def _build_intent(output, order_id, prior_intent, preserve_prior, message):
         intent = prior_intent.intent
     else:
         intent = output.intent
+    list_orders = (
+        False if preserve_prior else (output.list_orders or _is_order_list_request(message))
+    )
+    if list_orders and intent == IntentType.unclear:
+        intent = IntentType.order_status
+    policy_topic = output.policy_topic
+    if policy_topic == PolicyTopic.general:
+        policy_topic = _policy_topic(message)
+    if intent != IntentType.policy_question:
+        policy_topic = PolicyTopic.general
     return Intent(
         intent=intent,
         order_id=order_id or (prior_intent.order_id if prior_intent else None),
         reason_code=output.reason_code or (prior_intent.reason_code if prior_intent else None),
-        policy_topic=_policy_topic(message)
-        if output.intent == IntentType.policy_question
-        else PolicyTopic.general,
-        list_orders=False
-        if preserve_prior
-        else (output.list_orders or _is_order_list_request(message)),
+        policy_topic=policy_topic,
+        list_orders=list_orders,
         injection_suspected=False if preserve_prior else output.injection_suspected,
     )
 

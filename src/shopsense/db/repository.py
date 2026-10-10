@@ -14,6 +14,25 @@ REFUNDS_INSERT = """
 """
 
 
+def snapshot_state(conn) -> dict:
+    return {
+        "orders": [dict(row) for row in conn.execute("SELECT id,status FROM orders ORDER BY id")],
+        "returns": [
+            dict(row) for row in conn.execute("SELECT id,order_id,status FROM returns ORDER BY id")
+        ],
+        "refunds": [
+            dict(row)
+            for row in conn.execute(
+                "SELECT order_id,return_id,kind,amount_minor FROM refunds ORDER BY id"
+            )
+        ],
+        "payments": [
+            dict(row)
+            for row in conn.execute("SELECT order_id,status FROM payments ORDER BY order_id")
+        ],
+    }
+
+
 def _one(conn, query, parameters=()):
     row = conn.execute(query, parameters).fetchone()
     return dict(row) if row else None

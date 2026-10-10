@@ -72,6 +72,7 @@ Respond with exactly one JSON object:
 {{"action":"call_tool","tool":"<name>","args":{{...}}}}
 or
 {{"action":"reply","text":"<message>"}}
+You have no native function-calling interface; call tools only through the JSON action.
 Ask the customer for confirmation in plain language before any change."""
 
     def _call_tool(self, tool: str, supplied_args: dict):
