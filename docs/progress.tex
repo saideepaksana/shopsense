@@ -13,7 +13,8 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta}
+\usetikzlibrary{positioning,arrows.meta,shapes.geometric}
+\usepackage{pdflscape}
 \usepackage[hidelinks]{hyperref}
 
 % Page geometry
@@ -79,7 +80,7 @@
 
 ShopSense is a customer-care assistant for a mock online store. It handles common requests about orders, cancellations, returns, refunds, and store policies. A wrong action could change order or refund data, so the system checks the order and policy before making a change.
 
-The main workflow, local database, policy retrieval, safety checks, and scripted evaluation have been implemented. The current evaluation is promising for the tested cases, but it does not measure how reliably a live LLM handles all customer messages.
+We have built the main workflow, local database, policy search, safety checks, and evaluation tools. We tested the live system with one model and one run per scenario, so these results only describe the cases we tried.
 
 % -------------------------------------------------------
 \section*{2. Proposed Approach and System Design}
@@ -87,40 +88,70 @@ The main workflow, local database, policy retrieval, safety checks, and scripted
 
 The system uses an LLM to classify a customer message and, when needed, propose a structured action plan. It reads the order from a local SQLite database and retrieves relevant store policy clauses using BM25 keyword ranking. A deterministic verifier checks the plan before any write can happen. The customer must confirm a proposed action. After confirmation, the system checks the current order again and then runs the write operation.
 
-The stages are connected with LangGraph. The read and write tools use MCP interfaces inside the same Python process. The workflow keeps the component that reads raw customer text separate from the component that writes to the database.
+LangGraph connects these steps as nodes. The diagram shows the node names and the routes between them. A confirmation reply starts a new graph run. Read and write tools use MCP interfaces in the same Python process.
 
+For an information request, such as an order-status question, the system responds without asking for confirmation. If a plan is invalid, the verifier can request one re-plan; if it is still unsafe, the system blocks it. A ``no'' reply or stale plan also ends without a write. The responder uses fixed templates, so the LLM does not write every customer-facing reply.
+
+We chose this design because order actions depend on both what the customer asks and the current order status. The policy search finds relevant rules, and code checks the plan before it can change the database.
+
+\clearpage
+\begin{landscape}
+\thispagestyle{empty}
 \begin{center}
+{\Large\bfseries LangGraph Request Flow}\\[3pt]
+{\small The arrows show the main paths. The notes below each path explain the conditional routes.}\\[8pt]
+\resizebox{\linewidth}{!}{%
 \begin{tikzpicture}[
-    stage/.style={draw, rounded corners, align=center, text width=9cm,
-                  minimum height=0.48cm, inner sep=4pt, font=\small},
-    arrow/.style={-stealth, thick},
-    node distance=0.18cm
+    stage/.style={draw, rounded corners, align=center, text width=3.15cm,
+                  minimum height=0.95cm, inner sep=5pt, font=\small},
+    terminal/.style={draw, ellipse, align=center, minimum width=2.1cm,
+                     minimum height=0.85cm, inner sep=4pt, font=\small},
+    panel/.style={draw, rounded corners, align=left, text width=19cm,
+                  inner sep=8pt, font=\small},
+    arrow/.style={-Stealth, thick}
 ]
-\node[stage] (input) {Customer message};
-\node[stage, below=of input] (triage) {Triage LLM: classify request and extract order ID};
-\node[stage, below=of triage] (facts) {Read customer orders and calculate relevant facts};
-\node[stage, below=of facts] (rag) {Policy RAG: retrieve relevant clauses with BM25};
-\node[stage, below=of rag] (planner) {Planner LLM: propose a structured plan};
-\node[stage, below=of planner] (verify) {Deterministic verifier: check policy and action rules};
-\node[stage, below=of verify] (confirm) {Ask for confirmation, then re-read and re-check data};
-\node[stage, below=of confirm] (execute) {Executor: call write tools after confirmation};
-\node[stage, below=of execute] (store) {Local SQLite: update mock order/refund data; store audit and memory};
-\node[stage, below=of store] (reply) {Return a template-based response};
-\draw[arrow] (input) -- (triage);
-\draw[arrow] (triage) -- (facts);
-\draw[arrow] (facts) -- (rag);
-\draw[arrow] (rag) -- (planner);
-\draw[arrow] (planner) -- (verify);
-\draw[arrow] (verify) -- (confirm);
-\draw[arrow] (confirm) -- (execute);
-\draw[arrow] (execute) -- (store);
-\draw[arrow] (store) -- (reply);
-\end{tikzpicture}
+% First graph run: the new-message path.
+\node[terminal] (start) at (0,0) {START};
+\node[stage] (triage) at (4,0) {triage\\LLM reads the message};
+\node[stage] (fetch) at (8,0) {fetch\_context\\ReadGateway reads customer orders};
+\node[stage] (policy) at (12,0) {retrieve\_policy\\Calculate facts; retrieve BM25 clauses};
+\node[stage] (plan) at (16,0) {plan\\LLM proposes a structured action};
+\node[stage] (verify) at (20,0) {verify\\Code checks policy and action rules};
+\draw[arrow] (start) -- (triage);
+\draw[arrow] (triage) -- (fetch);
+\draw[arrow] (fetch) -- (policy);
+\draw[arrow] (policy) -- (plan);
+\draw[arrow] (plan) -- (verify);
+
+\node[panel] at (10,-2.4) {\textbf{Routes after verify}\\
+Invalid plan: \texttt{replan} sends it to \texttt{plan} once more; a second invalid result goes to \texttt{fail\_closed}.\\
+Approved plan: \texttt{request\_confirmation} saves it for the next turn. Information requests, denials, and blocked plans go to \texttt{finalize}.\\
+Each path records audit and memory in \texttt{finalize}, then creates the reply in \texttt{respond}.};
+
+% Second graph run: the customer answers the confirmation prompt.
+\node[font=\large\bfseries] at (10,-5.65) {Next graph run: confirmation reply};
+\node[stage] (pending) at (0,-7.0) {load\_pending\\Check saved plan and customer};
+\node[stage] (reverify) at (4,-7.0) {reverify\\Read current order and check again};
+\node[stage] (execute) at (8,-7.0) {execute\\Executor calls WriteGateway / MCP};
+\node[stage] (finalize) at (12,-7.0) {finalize\\Record audit and memory};
+\node[stage] (respond) at (16,-7.0) {respond\\Build template reply};
+\node[terminal] (end) at (20,-7.0) {END};
+\draw[arrow] (start.south) -- ++(0,-0.65) -| (pending.west);
+\node[font=\small,anchor=west,fill=white] at (0.25,-4.4) {confirmation reply};
+\draw[arrow] (pending) -- (reverify);
+\draw[arrow] (reverify) -- (execute);
+\draw[arrow] (execute) -- (finalize);
+\draw[arrow] (finalize) -- (respond);
+\draw[arrow] (respond) -- (end);
+\node[panel] at (10,-9.4) {\textbf{Confirmation routes}\\
+Only ``yes'' with a valid saved plan reaches \texttt{execute}. A ``no'' reply, stale plan, or failed re-check skips execution and goes to \texttt{finalize}.};
+\end{tikzpicture}%
+}
 \end{center}
-
-For an information request, such as an order-status question, the system responds without asking for confirmation. If a plan is invalid, the verifier can request one re-plan; if the plan is still unsafe, the system blocks it. The responder uses fixed templates, so the LLM does not write every customer-facing reply.
-
-This approach is suitable because order actions depend on both the customer request and the current order state. Policy retrieval supplies relevant rules, and the verifier checks important conditions in code instead of relying only on the LLM.
+\vfill
+\begin{center}\small\thepage\end{center}
+\end{landscape}
+\clearpage
 
 % -------------------------------------------------------
 \section*{3. Prototype Implementation}
@@ -128,9 +159,9 @@ This approach is suitable because order actions depend on both the customer requ
 
 \subsection*{3.1 Data and Test Environment}
 
-The prototype uses synthetic store data in SQLite. The seed data contains 6 customers, 17 orders, and 9 products. Store policies are kept in a separate file with 18 identified clauses. Payments are simulated; the prototype does not move real money.
+The SQLite seed contains 6 customers, 17 orders, and 9 products. The policy file contains 18 identified clauses. Payments are simulated. Automated tests use temporary databases and scripted LLM outputs. Live evaluation uses openai/gpt-oss-20b through Groq in addition to the scripted tests.
 
-The implementation uses Python, Pydantic, LangGraph, FastMCP, BM25 policy retrieval, and an OpenAI-compatible LLM client configured for Groq. The offline evaluation uses scripted LLM outputs and temporary databases. A separate six-conversation smoke run used the configured Groq endpoint and temporary databases.
+The stack is Python, Pydantic, LangGraph, FastMCP, BM25 policy retrieval, SQLite, and an OpenAI-compatible LLM client.
 
 \subsection*{3.2 Current Implementation Status}
 
@@ -142,12 +173,16 @@ The implementation uses Python, Pydantic, LangGraph, FastMCP, BM25 policy retrie
 \midrule
 Order lookup and order list & Complete & Reads orders for the selected customer. \\
 Cancellation, return, refund & Complete & Uses mock database writes and simulated payments. \\
-Policy RAG & Complete & Retrieves tagged policy clauses using BM25 and keeps clause IDs for citations. \\
-LangGraph and MCP & Complete & Runs the request flow and exposes read/write tools in-process. \\
-Safety checks & Complete & Verifies plans, requires confirmation for writes, re-checks data, and uses idempotency keys. \\
-Audit and customer memory & Complete & Stores decision events and a small set of customer memory values. \\
-Evaluation & Complete for prototype & Includes 32 scripted scenarios, a baseline, and a small Groq smoke run. \\
-Ticket workflow & Partial & Classifies requests, but does not create or manage support tickets. \\
+Policy retrieval & Complete & Retrieves tagged clauses with BM25 and preserves clause IDs. \\
+LangGraph and MCP & Complete & Runs the request flow with in-process read/write tools. \\
+Safety checks & Complete & Verifies plans, requires confirmation, re-checks data, and uses idempotency keys. \\
+Audit and customer memory & Complete & Stores decision events and selected customer history. \\
+Per-turn trace & Complete & \texttt{-\kern0pt-verbose} shows intent, policy, plan, verification, timing, and usage details. \\
+Demo CLI & Complete & Includes \texttt{/orders}, \texttt{/db}, \texttt{/audit}, and \texttt{-\kern0pt-mode baseline}. \\
+Live evaluation harness & Complete & Runs 41 scenarios; supports 12 simulated personas and resumable reports. \\
+Ticket workflow & Partial & Classifies requests but does not create or manage support tickets. \\
+Live baseline results & Pending & Only 2 of 41 baseline trials are valid in the saved report. \\
+Simulated-customer results & Pending & Live persona trials have not completed. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -159,7 +194,6 @@ The input is a customer message and the customer ID for the session. For example
 For a request that is not allowed, such as cancelling an already shipped order, the verifier blocks the write and the database stays unchanged. A policy question follows the retrieval and response path without making a database change.
 
 % -------------------------------------------------------
-\newpage
 \section*{4. Preliminary Evaluation}
 % -------------------------------------------------------
 
@@ -186,29 +220,37 @@ In this scripted evaluation, the guarded workflow reached the expected database 
 
 These are deterministic regression results. The same scripted outputs are repeated, so they do not measure live LLM variation or general language understanding. They show that the workflow and its checks behave as expected for these test cases.
 
-\subsection*{4.2 Other Checks}
+\subsection*{4.2 Live LLM Evaluation}
 
-The test suite has 62 passing tests, including database, policy retrieval, verifier, end-to-end, and architecture checks. Ruff lint and formatting checks also pass.
+The saved report uses \texttt{openai/gpt-oss-20b} on \texttt{api.groq.com}, dated 2026-10-10. The business clock was fixed at 2026-10-01. One trial per scenario was requested. The full pipeline run has 41 valid trials. The baseline comparison is incomplete: the report has 2 valid baseline trials and 39 infrastructure errors after provider quota was exhausted. The simulated-customer evaluation has not completed.
 
-A separate Groq smoke run covered six conversations. All six passed their final database-state assertions. This confirms basic provider integration for those cases, but it is not a reliability benchmark. The prompts went to the configured provider, and the database changes were made only in temporary local databases.
+\begin{center}
+\small
+\begin{tabular}{p{0.46\textwidth}p{0.42\textwidth}}
+\toprule
+\textbf{Pipeline result} & \textbf{Value} \\
+\midrule
+Valid trials & 41 of 41 \\
+Task success (state) & 1.000 \\
+Task success (full) & 1.000 \\
+Policy-violation rate & 0.000 \\
+Injection-resistance rate & 1.000 \\
+Unconfirmed-write rate & 0.000 \\
+Mean LLM calls & 1.805 \\
+P50 / P95 turn latency & 5,904.952 / 19,971.585 ms \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+In the first full live run, N10 (``show me all my orders'') and P3 (``Where does my refund go?'') failed because triage asked for clarification. We changed triage, and both cases passed in the final 41-scenario report. Since we made these changes after seeing the failures, the final results are not an independent check.
+
+All 131 automated tests pass. In the 41 live pipeline cases, the database ended in the expected state and there were no policy violations or unconfirmed writes. We do not yet have enough results to compare against the live baseline or to draw conclusions about other models and requests. The Markdown and JSON reports are in \path{reports/final/}.
 
 % -------------------------------------------------------
-\enlargethispage{3\baselineskip}
 \section*{5. Challenges, Limitations, and Remaining Work}
-% -------------------------------------------------------
 
-One evaluation fixture initially used a concrete return ID where the guarded executor requires a placeholder for the ID generated by the return step. This caused two valid return cases to fail. The guarded and baseline fixtures were separated, a regression test was added, and the three-trial evaluation was rerun.
+The first live run had two triage errors. We updated triage, and those cases passed in the later run. The baseline also had a provider tool-call error in 18 trials: the provider rejected a native tool call when tool choice was disabled. We changed the baseline prompt to use the JSON action format. We could not finish the baseline or simulated-customer runs because we ran out of provider quota.
 
-The current prototype has the following limitations:
-\begin{itemize}
-    \item The data and payments are mock data; the customer ID is supplied to the session and is not a real authentication system.
-    \item Returns apply to a whole order, not individual items. The application supports English only.
-    \item Ticket triage is request classification only. There is no ticket-management workflow or production user interface.
-    \item Customer replies mostly use fixed templates. Multiple requests in one message and unsupported actions such as replacements are not handled as full workflows.
-    \item A return and its refund use separate database transactions. If the second step fails, the return may remain recorded.
-    \item The live Groq check covered only six conversations. More repeated live trials and mentor feedback are still needed.
-\end{itemize}
-
-\textbf{Next steps:} discuss the design and results with the mentor, record the feedback, and use it to choose further tests and corrections. Run additional live-model trials if needed, then prepare the final demonstration and presentation. No real payment integration or production deployment is planned for this prototype.
+A return and its refund are separate tool calls and database transactions. If return creation succeeds but the refund call fails, the return can remain recorded. Other limits are mock payment data, session-supplied customer identity, whole-order returns, English-only support, and a ticket workflow that classifies requests but does not manage tickets.
 
 \end{document}
