@@ -94,6 +94,27 @@ def test_lists_customer_orders(db_path, settings):
     assert "ORD-10002 (shipped, Rs 3,499.00)" in reply.text
 
 
+def test_memory_continues_across_sessions(db_path, settings):
+    first = create_session(
+        "C1",
+        db_path=db_path,
+        llm=FakeLLM(['{"intent":"order_status"}']),
+        settings=settings,
+    )
+    first.send("what is the status of ORD-10001?")
+    second = create_session(
+        "C1",
+        db_path=db_path,
+        llm=FakeLLM(['{"intent":"cancel_order"}']),
+        settings=settings,
+    )
+
+    reply = second.send("cancel my order")
+
+    assert reply.text.startswith("Which order is this about?")
+    assert "- ORD-10001 (placed, Rs 2,999.00) <- last order you asked about" in reply.text
+
+
 def test_pending_non_confirmation_does_not_call_llm(db_path, settings):
     llm = FakeLLM(
         [
@@ -188,9 +209,7 @@ def test_invalid_planner_amount_fails_closed_without_crashing(db_path, settings,
         + amount
         + '"}}],"cited_clause_ids":["REF-5"]}'
     )
-    llm = FakeLLM(
-        ['{"intent":"refund_request","order_id":"ORD-10009"}', *([raw_plan] * 8)]
-    )
+    llm = FakeLLM(['{"intent":"refund_request","order_id":"ORD-10009"}', *([raw_plan] * 8)])
 
     reply = create_session("C3", db_path=db_path, llm=llm, settings=settings).send(
         "refund approved return ORD-10009"

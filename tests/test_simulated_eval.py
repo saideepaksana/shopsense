@@ -61,6 +61,9 @@ def test_simulated_system_unavailable_is_infra_error(settings):
     scenario = next(item for item in all_scenarios() if item.id == "N1")
 
     class Offline:
+        def usage(self):
+            return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
         def complete(self, system, user):
             raise LLMUnavailableError("offline")
 
@@ -81,6 +84,9 @@ def test_simulated_customer_unavailable_is_infra_error(settings):
     scenario = next(item for item in all_scenarios() if item.id == "N1")
 
     class Offline:
+        def usage(self):
+            return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
+
         def complete(self, system, user):
             raise LLMUnavailableError("offline")
 

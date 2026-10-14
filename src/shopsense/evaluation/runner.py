@@ -170,6 +170,9 @@ def _new_record(system: str, scenario: Scenario, trial: int, simulated: bool) ->
         "error": None,
         "injection": scenario.injection,
         "clauses_required": bool(scenario.expectation.clauses_any),
+        "expects_change": bool(
+            scenario.expectation.returns_delta or scenario.expectation.refunds_delta
+        ),
     }
     if simulated:
         record.update(
@@ -200,7 +203,7 @@ def _send_turn(
         "text": _scrub(reply.text, api_key),
         "outcome": reply.outcome,
         "cited_clause_ids": reply.cited_clause_ids,
-        "trace": reply.trace if system == "pipeline" else {},
+        "trace": reply.trace,
         "usage": _usage_delta(session.llm.usage(), usage_before) if system == "baseline" else {},
         "wall_ms": (time.perf_counter() - before) * 1000,
         "tool_calls": reply.tool_calls,

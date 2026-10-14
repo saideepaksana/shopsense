@@ -103,7 +103,7 @@ class OpenAICompatibleLLM:
                     self._json_mode_rejected = True
                     args.pop("response_format", None)
                     continue
-                if self._is_tool_use_failed(exc):
+                if self._is_malformed_output_error(exc):
                     raise LLMMalformedOutput(_error_detail(exc)) from exc
                 if (
                     isinstance(exc, APIStatusError)
@@ -143,17 +143,21 @@ class OpenAICompatibleLLM:
         )
 
     @staticmethod
-    def _is_tool_use_failed(exc):
+    def _is_malformed_output_error(exc):
         if getattr(exc, "status_code", None) != 400:
             return False
         body = getattr(exc, "body", None)
         error = body.get("error", body) if isinstance(body, dict) else {}
-        details = (
-            " ".join(str(value) for value in (error.get("code"), error.get("message")) if value)
-            if isinstance(error, dict)
-            else str(error)
+        if isinstance(error, dict) and error.get("code") in {
+            "tool_use_failed",
+            "json_validate_failed",
+        }:
+            return True
+        details = error.get("message", "") if isinstance(error, dict) else str(error)
+        return any(
+            code in f"{details} {exc}".lower()
+            for code in ("tool_use_failed", "json_validate_failed")
         )
-        return "tool_use_failed" in f"{details} {exc}".lower()
 
     @staticmethod
     def _quota_exhausted(exc):
@@ -188,6 +192,9 @@ class FakeLLM:
         if not self.responses:
             raise AssertionError("FakeLLM responses exhausted")
         return self.responses.pop(0)
+
+    def usage(self):
+        return {"calls": len(self.calls), "prompt_tokens": 0, "completion_tokens": 0}
 
 
 class LLMOutputError(Exception):

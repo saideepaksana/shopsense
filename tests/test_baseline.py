@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from shopsense.baseline import BaselineSession
 from shopsense.llm import FakeLLM
 
@@ -24,6 +26,37 @@ def test_baseline_prompt_disables_native_function_calling(read_gateway, write_ga
         "You have no native function-calling interface; call tools only through the JSON action."
         in session._system_prompt()
     )
+
+
+def test_baseline_prompt_includes_frozen_date(read_gateway, write_gateway):
+    session = BaselineSession("C1", FakeLLM([]), read_gateway, write_gateway, "policy", 1)
+
+    assert "Today's date: 2026-10-01" in session._system_prompt()
+
+
+@pytest.mark.parametrize(
+    ("responses", "steps", "reason"),
+    [
+        (['{"action":"reply","text":"done"}'], 2, "replied"),
+        (["not json", "still not json", "bad"], 2, "invalid_output"),
+        (['{"action":"unknown"}'], 2, "unknown_action"),
+        (['{"action":"call_tool","tool":"missing","args":{}}'], 2, "bad_tool_call"),
+        (
+            [
+                '{"action":"call_tool","tool":"list_orders","args":{}}',
+                '{"action":"call_tool","tool":"list_orders","args":{}}',
+            ],
+            2,
+            "max_steps",
+        ),
+    ],
+)
+def test_baseline_stop_reasons(read_gateway, write_gateway, responses, steps, reason):
+    reply = BaselineSession(
+        "C1", FakeLLM(responses), read_gateway, write_gateway, "policy", steps
+    ).send("status")
+
+    assert reply.trace["stop_reason"] == reason
 
 
 def test_baseline_max_steps(read_gateway, write_gateway):

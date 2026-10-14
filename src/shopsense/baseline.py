@@ -3,6 +3,7 @@ import uuid
 
 from pydantic import BaseModel
 
+from shopsense.clock import today
 from shopsense.llm import LLMOutputError, complete_json
 from shopsense.models import Reply
 
@@ -38,25 +39,27 @@ class BaselineSession:
         before = self.read_gateway.call_count + self.write_gateway.call_count
         self.history.append({"user": text})
         system = self._system_prompt()
+        stop_reason = "max_steps"
         for _ in range(self.max_steps):
             try:
                 step = complete_json(self.llm, system, json.dumps(self.history), Step, self.retries)
             except LLMOutputError:
-                break
+                return self._reply("I could not complete this request.", before, "invalid_output")
             if step.action == "reply":
                 reply_text = step.text or ""
                 self.history.append({"assistant": reply_text})
-                return self._reply(reply_text, before)
+                return self._reply(reply_text, before, "replied")
             if step.action != "call_tool" or not step.tool:
-                break
+                return self._reply("I could not complete this request.", before, "unknown_action")
             result = self._call_tool(step.tool, step.args)
             if result is None:
-                break
+                return self._reply("I could not complete this request.", before, "bad_tool_call")
             self.history.append({"tool": step.tool, "result": result})
-        return self._reply("I could not complete this request.", before)
+        return self._reply("I could not complete this request.", before, stop_reason)
 
     def _system_prompt(self) -> str:
         return f"""Logged-in customer: {self.customer_id}
+Today's date: {today().isoformat()}
 Policy:
 {self.policy_text}
 
@@ -88,6 +91,8 @@ Ask the customer for confirmation in plain language before any change."""
         except (AttributeError, TypeError):
             return None
 
-    def _reply(self, text: str, before: int) -> Reply:
+    def _reply(self, text: str, before: int, stop_reason: str) -> Reply:
         calls = self.read_gateway.call_count + self.write_gateway.call_count - before
-        return Reply(text, None, "baseline", [], calls, uuid.uuid4().hex)
+        return Reply(
+            text, None, "baseline", [], calls, uuid.uuid4().hex, trace={"stop_reason": stop_reason}
+        )

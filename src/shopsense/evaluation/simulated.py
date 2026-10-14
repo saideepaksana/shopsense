@@ -94,11 +94,6 @@ class SimulatedTurn(BaseModel):
     done: bool
 
 
-class _TurnOutput(BaseModel):
-    message: str
-    done: bool
-
-
 class CustomerSimulator:
     def __init__(self, llm: LLM, persona: Persona) -> None:
         self.llm = llm
@@ -112,12 +107,12 @@ class CustomerSimulator:
                 self.llm,
                 self._system_prompt(),
                 json.dumps(transcript, ensure_ascii=False),
-                _TurnOutput,
+                SimulatedTurn,
                 1,
             )
         finally:
             self._update_usage(before)
-        return SimulatedTurn(message=result.message, done=result.done)
+        return result
 
     def _update_usage(self, before: dict[str, int]) -> None:
         after = self._usage_snapshot()
@@ -125,13 +120,7 @@ class CustomerSimulator:
             self._usage[key] += after.get(key, before.get(key, 0)) - before.get(key, 0)
 
     def _usage_snapshot(self) -> dict[str, int]:
-        if hasattr(self.llm, "usage"):
-            return self.llm.usage()
-        return {
-            "calls": len(getattr(self.llm, "calls", [])),
-            "prompt_tokens": getattr(self.llm, "last_usage", {}).get("prompt_tokens", 0),
-            "completion_tokens": getattr(self.llm, "last_usage", {}).get("completion_tokens", 0),
-        }
+        return self.llm.usage()
 
     def usage(self) -> dict[str, int]:
         return dict(self._usage)

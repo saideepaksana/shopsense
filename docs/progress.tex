@@ -14,7 +14,6 @@
 \usepackage{array}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,shapes.geometric}
-\usepackage{pdflscape}
 \usepackage[hidelinks]{hyperref}
 
 % Page geometry
@@ -94,64 +93,65 @@ For an information request, such as an order-status question, the system respond
 
 We chose this design because order actions depend on both what the customer asks and the current order status. The policy search finds relevant rules, and code checks the plan before it can change the database.
 
-\clearpage
-\begin{landscape}
-\thispagestyle{empty}
-\begin{center}
-{\Large\bfseries LangGraph Request Flow}\\[3pt]
-{\small The arrows show the main paths. The notes below each path explain the conditional routes.}\\[8pt]
-\resizebox{\linewidth}{!}{%
+\begin{figure}[t]
+\centering
 \begin{tikzpicture}[
-    stage/.style={draw, rounded corners, align=center, text width=3.15cm,
-                  minimum height=0.95cm, inner sep=5pt, font=\small},
-    terminal/.style={draw, ellipse, align=center, minimum width=2.1cm,
-                     minimum height=0.85cm, inner sep=4pt, font=\small},
-    panel/.style={draw, rounded corners, align=left, text width=19cm,
-                  inner sep=8pt, font=\small},
-    arrow/.style={-Stealth, thick}
+    x=0.97cm, y=0.88cm,
+    stage/.style={draw, rounded corners=2pt, fill=blue!4, align=center,
+                  text width=4.8cm, minimum height=0.85cm, inner sep=2pt, font=\scriptsize},
+    gate/.style={draw, rounded corners=2pt, fill=orange!12, align=center,
+                 text width=4.8cm, minimum height=0.85cm, inner sep=2pt, font=\scriptsize},
+    terminal/.style={draw, ellipse, fill=gray!12, align=center, minimum width=3.4cm,
+                     minimum height=0.7cm, inner sep=2pt, font=\scriptsize},
+    note/.style={draw, rounded corners=2pt, align=left, text width=6.4cm,
+                 inner sep=4pt, font=\scriptsize},
+    lab/.style={font=\scriptsize, align=center, text=black!75},
+    arrow/.style={-{Stealth[length=2mm]}, thick},
+    side/.style={-{Stealth[length=2mm]}, thick, dashed}
 ]
-% First graph run: the new-message path.
-\node[terminal] (start) at (0,0) {START};
-\node[stage] (triage) at (4,0) {triage\\LLM reads the message};
-\node[stage] (fetch) at (8,0) {fetch\_context\\ReadGateway reads customer orders};
-\node[stage] (policy) at (12,0) {retrieve\_policy\\Calculate facts; retrieve BM25 clauses};
-\node[stage] (plan) at (16,0) {plan\\LLM proposes a structured action};
-\node[stage] (verify) at (20,0) {verify\\Code checks policy and action rules};
-\draw[arrow] (start) -- (triage);
-\draw[arrow] (triage) -- (fetch);
-\draw[arrow] (fetch) -- (policy);
-\draw[arrow] (policy) -- (plan);
-\draw[arrow] (plan) -- (verify);
+% Run 1: new customer message
+\node[terminal] (s1)  at (0,0)    {START: new message};
+\node[stage]    (tri) at (0,-1.2) {\texttt{triage}\\LLM classifies the request};
+\node[stage]    (fet) at (0,-2.4) {\texttt{fetch\_context}\\read the customer's orders};
+\node[stage]    (pol) at (0,-3.6) {\texttt{retrieve\_policy}\\calculate facts, BM25 policy clauses};
+\node[stage]    (pla) at (0,-4.8) {\texttt{plan}\\LLM proposes a structured plan};
+\node[gate]     (ver) at (0,-6.0) {\texttt{verify}\\code checks policy and action rules};
+\node[stage]    (rqc) at (0,-7.2) {\texttt{request\_confirmation}\\save the plan, ask yes / no};
+\node[stage]    (fin) at (0,-8.4) {\texttt{finalize}\\write audit and memory};
+\node[stage]    (res) at (0,-9.6) {\texttt{respond}\\build the template reply};
+\node[terminal] (e1)  at (0,-10.8) {END};
+\foreach \a/\b in {s1/tri,tri/fet,fet/pol,pol/pla,pla/ver,ver/rqc,rqc/fin,fin/res,res/e1}
+    \draw[arrow] (\a) -- (\b);
+% replan loop
+\draw[arrow] (ver.east) -- ++(0.45,0) |- (pla.east);
+\node[lab, anchor=west] at (2.95,-5.4) {invalid plan:\\replan once};
+% bypass for info, denied, blocked
+\draw[arrow] (ver.west) -- ++(-0.45,0) |- (fin.west);
+\node[lab, anchor=east] at (-3.15,-7.2) {info,\\denied,\\blocked};
 
-\node[panel] at (10,-2.4) {\textbf{Routes after verify}\\
-Invalid plan: \texttt{replan} sends it to \texttt{plan} once more; a second invalid result goes to \texttt{fail\_closed}.\\
-Approved plan: \texttt{request\_confirmation} saves it for the next turn. Information requests, denials, and blocked plans go to \texttt{finalize}.\\
-Each path records audit and memory in \texttt{finalize}, then creates the reply in \texttt{respond}.};
+% Run 2: customer reply
+\node[terminal] (s2)  at (7.6,-7.2)  {START: customer replies};
+\node[stage]    (ldp) at (7.6,-8.4)  {\texttt{load\_pending}\\check saved plan and customer};
+\node[stage]    (rev) at (7.6,-9.6)  {\texttt{reverify}\\read the order again, check again};
+\node[gate]     (exe) at (7.6,-10.8) {\texttt{execute}\\Executor calls the write tools (MCP)};
+\node[stage]    (fn2) at (7.6,-12.0) {\texttt{finalize}\\write audit and memory};
+\node[stage]    (rs2) at (7.6,-13.2) {\texttt{respond}\\build the template reply};
+\node[terminal] (e2)  at (7.6,-14.4) {END};
+\foreach \a/\b in {s2/ldp,ldp/rev,rev/exe,exe/fn2,fn2/rs2,rs2/e2}
+    \draw[arrow] (\a) -- (\b);
+\draw[arrow] (rev.east) -- ++(0.45,0) |- (fn2.east);
+\node[lab, anchor=west] at (10.7,-10.8) {``no'', stale,\\or failed\\re-check:\\no write};
+\draw[side] (rqc.east) -- (s2.west);
+\node[lab] at (3.9,-6.55) {next turn:\\customer reply};
 
-% Second graph run: the customer answers the confirmation prompt.
-\node[font=\large\bfseries] at (10,-5.65) {Next graph run: confirmation reply};
-\node[stage] (pending) at (0,-7.0) {load\_pending\\Check saved plan and customer};
-\node[stage] (reverify) at (4,-7.0) {reverify\\Read current order and check again};
-\node[stage] (execute) at (8,-7.0) {execute\\Executor calls WriteGateway / MCP};
-\node[stage] (finalize) at (12,-7.0) {finalize\\Record audit and memory};
-\node[stage] (respond) at (16,-7.0) {respond\\Build template reply};
-\node[terminal] (end) at (20,-7.0) {END};
-\draw[arrow] (start.south) -- ++(0,-0.65) -| (pending.west);
-\node[font=\small,anchor=west,fill=white] at (0.25,-4.4) {confirmation reply};
-\draw[arrow] (pending) -- (reverify);
-\draw[arrow] (reverify) -- (execute);
-\draw[arrow] (execute) -- (finalize);
-\draw[arrow] (finalize) -- (respond);
-\draw[arrow] (respond) -- (end);
-\node[panel] at (10,-9.4) {\textbf{Confirmation routes}\\
-Only ``yes'' with a valid saved plan reaches \texttt{execute}. A ``no'' reply, stale plan, or failed re-check skips execution and goes to \texttt{finalize}.};
-\end{tikzpicture}%
-}
-\end{center}
-\vfill
-\begin{center}\small\thepage\end{center}
-\end{landscape}
-\clearpage
+% notes
+\node[note, anchor=north west] at (5.0,0.35) {\textbf{How to read this}\\[1pt]
+Blue boxes are LangGraph nodes. Orange boxes are the two places where code, not the LLM, decides.\\[2pt]
+\textbf{Run 1} starts with a new message. Information requests, denials and blocked plans go straight to \texttt{finalize}. A second invalid plan goes to \texttt{fail\_closed}, which also ends in \texttt{finalize}.\\[2pt]
+\textbf{Run 2} starts when the customer answers. Only ``yes'' with a valid saved plan reaches \texttt{execute}.};
+\end{tikzpicture}
+\caption{LangGraph request flow. A write needs two graph runs: one to propose it and one to confirm it.}
+\end{figure}
 
 % -------------------------------------------------------
 \section*{3. Prototype Implementation}

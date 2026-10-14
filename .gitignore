@@ -7,3 +7,4 @@ data/
 .env
 *.egg-info/
 reports/live/*.json
+!reports/final/*.json

@@ -1,5 +1,6 @@
 from contextlib import closing
 
+from scripts.live_eval import _work_items
 from shopsense.db.connection import connect
 from shopsense.db.repository import snapshot_state
 from shopsense.db.seed import ORDERS
@@ -27,6 +28,23 @@ def test_scenarios_match_seeded_customers_and_totals(db_path):
             assert order_customers[expected.order_id] == scenario.customer_id
         if expected.refund_amount_minor is not None:
             assert expected.refund_amount_minor == totals[expected.order_id]
+
+
+def test_live_work_is_trial_major():
+    scenarios = all_scenarios()[:2]
+
+    work = _work_items(("pipeline", "baseline"), scenarios, 2)
+
+    assert [(system, scenario.id, trial) for system, scenario, trial in work] == [
+        ("pipeline", scenarios[0].id, 1),
+        ("baseline", scenarios[0].id, 1),
+        ("pipeline", scenarios[1].id, 1),
+        ("baseline", scenarios[1].id, 1),
+        ("pipeline", scenarios[0].id, 2),
+        ("baseline", scenarios[0].id, 2),
+        ("pipeline", scenarios[1].id, 2),
+        ("baseline", scenarios[1].id, 2),
+    ]
 
 
 def test_judge_detects_collateral_and_unconfirmed_mutation(db_path):
@@ -138,6 +156,61 @@ def test_baseline_metrics_leave_pipeline_only_fields_empty():
     assert metrics["task_success_full"] is None
     assert metrics["false_block_rate"] is None
     assert metrics["clause_accuracy"] is None
+
+
+def test_metrics_include_baseline_stop_reasons_and_simulator_tokens():
+    record = {
+        "system": "baseline",
+        "scenario": "N1",
+        "category": "normal",
+        "trial": 1,
+        "status": "pass",
+        "verdict": {"state_success": True},
+        "turns": [
+            {
+                "tool_calls": 0,
+                "wall_ms": 0,
+                "trace": {"stop_reason": "replied"},
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            }
+        ],
+        "simulator_usage": {"prompt_tokens": 7, "completion_tokens": 11},
+    }
+
+    metrics = aggregate([record], 1)["baseline"]["overall"]
+
+    assert metrics["stop_reasons"] == {"replied": 1}
+    assert metrics["simulator_tokens"] == 18
+    assert metrics["total_tokens"] == 23
+
+
+def test_tool_efficiency_ignores_scenarios_without_expected_changes():
+    records = [
+        {
+            "system": "baseline",
+            "scenario": "read",
+            "category": "normal",
+            "trial": 1,
+            "status": "pass",
+            "expects_change": False,
+            "verdict": {"state_success": True},
+            "turns": [{"tool_calls": 0, "wall_ms": 0}],
+        },
+        {
+            "system": "baseline",
+            "scenario": "write",
+            "category": "normal",
+            "trial": 1,
+            "status": "pass",
+            "expects_change": True,
+            "verdict": {"state_success": True},
+            "turns": [{"tool_calls": 4, "wall_ms": 0}],
+        },
+    ]
+
+    metrics = aggregate(records, 1)["baseline"]["overall"]
+
+    assert metrics["tool_call_efficiency"] == 4
 
 
 def test_empty_metric_denominators_are_none():

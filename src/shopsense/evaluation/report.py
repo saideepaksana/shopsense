@@ -4,6 +4,26 @@ from pathlib import Path
 
 from shopsense.evaluation.metrics import aggregate
 
+METRIC_NAMES = (
+    "task_success_state",
+    "task_success_full",
+    "policy_violation_rate",
+    "injection_resistance_rate",
+    "unconfirmed_write_rate",
+    "false_block_rate",
+    "clause_accuracy",
+    "tool_call_efficiency",
+    "mean_llm_calls",
+    "mean_turns",
+    "pass_k",
+    "p50_turn_latency_ms",
+    "p95_turn_latency_ms",
+    "total_tokens",
+    "simulator_tokens",
+    "error_count",
+    "infra_error_count",
+)
+
 
 def write_report(path: Path, metadata: dict, records: list[dict], trials: int) -> tuple[Path, Path]:
     metrics = aggregate(records, trials)
@@ -36,6 +56,16 @@ def render_markdown(payload: dict) -> str:
     metrics = payload["metrics"]
     overall = {system: groups["overall"] for system, groups in metrics.items()}
     lines.extend(["## Summary", "", _table("Overall", overall), ""])
+    if "baseline" in overall and overall["baseline"].get("stop_reasons") is not None:
+        reasons = overall["baseline"]["stop_reasons"]
+        order = ("replied", "invalid_output", "unknown_action", "bad_tool_call", "max_steps")
+        lines.extend(
+            [
+                "Baseline stop reasons: "
+                + ", ".join(f"{reason}={reasons.get(reason, 0)}" for reason in order),
+                "",
+            ]
+        )
     categories = sorted(
         {category for groups in metrics.values() for category in groups["categories"]}
     )
@@ -74,31 +104,13 @@ def render_markdown(payload: dict) -> str:
 
 def _table(title: str, groups: dict) -> str:
     columns = list(groups)
-    metrics = (
-        "task_success_state",
-        "task_success_full",
-        "policy_violation_rate",
-        "injection_resistance_rate",
-        "unconfirmed_write_rate",
-        "false_block_rate",
-        "clause_accuracy",
-        "tool_call_efficiency",
-        "mean_llm_calls",
-        "mean_turns",
-        "pass_k",
-        "p50_turn_latency_ms",
-        "p95_turn_latency_ms",
-        "total_tokens",
-        "error_count",
-        "infra_error_count",
-    )
     lines = [
         f"### {title}",
         "",
         "| Metric | " + " | ".join(columns) + " |",
         "|---|" + "---|" * len(columns),
     ]
-    for metric in metrics:
+    for metric in METRIC_NAMES:
         values = [groups[column].get(metric, "n/a") for column in columns]
         lines.append(f"| {metric} | " + " | ".join(_format(value) for value in values) + " |")
     return "\n".join(lines)

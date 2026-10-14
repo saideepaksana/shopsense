@@ -50,7 +50,7 @@ The raw message is consumed by triage. If the request is a policy question, tria
 | Write path | `mcp_servers/write_server.py`, `db/repository.py` | Execute SQLite mutations and enforce data integrity. These tools intentionally do not enforce business policy so the baseline can be tested against the same tools. |
 | Audit and memory | `audit.py`, `memory.py` | Store decision/action events and durable, small customer summaries. |
 | Baseline | `baseline.py` | Single LLM loop with read and write tools and policy text; it does not use the verifier or a code-enforced confirmation gate. |
-| Evaluation | `scripts/evaluate.py`, `scripts/live_smoke.py` | Offline scripted architecture benchmark and optional provider-backed smoke run, respectively. |
+| Evaluation | `scripts/evaluate.py`, `scripts/live_eval.py`, `src/shopsense/evaluation/` | Offline scripted benchmark and resumable provider-backed pipeline/baseline evaluator. |
 
 ## Request flow
 
@@ -60,7 +60,7 @@ The raw message is consumed by triage. If the request is a policy question, tria
 4. **Retrieve clauses.** The BM25 retriever selects clauses using intent tags and a query made from structured intent, reason, and order status. General clauses are included for action intents. An authorization clause is added when a requested order cannot be found.
 5. **Plan.** Missing information, status lookup, policy questions, and unauthorized order IDs are handled deterministically. Other action intents are sent to the planner with the structured context only.
 6. **Verify.** The verifier checks the plan. A violation permits one planner retry; if the next result remains invalid, the graph fails closed. An approved plan is saved and shown to the customer; it is not executed in this turn.
-7. **Confirm.** Only the exact lower-case text `yes` or `no` (after trimming surrounding whitespace) is accepted. Other input leaves the pending plan untouched and does not invoke the LLM.
+7. **Confirm.** Case-insensitive `yes`/`no`, `y`/`n`, and trailing punctuation are accepted after trimming whitespace. Other input leaves the pending plan untouched and does not invoke the LLM.
 8. **Reverify and execute.** On `yes`, the stored payload hash and customer ID are checked. Facts are fetched again and the plan is re-verified against current state. Only then does the executor call write tools. `no` marks the pending plan rejected.
 9. **Finalize and respond.** Audit and memory are updated. The customer sees a template response with policy citations where applicable.
 
@@ -104,13 +104,13 @@ The rules are intentionally centralized in `agents/verifier.py`. The MCP write s
 
 ## Confirmation, idempotency, and failure behavior
 
-The graph saves an approved plan before asking for confirmation. The stored payload includes the plan, intent, and retrieved clause IDs. SHA-256 detects changes to the serialized payload between turns; it is an integrity check, not a keyed signature against an attacker who can rewrite both the payload and its hash in the database. Confirmation accepts case-insensitive yes/no, y/n, and trailing punctuation; longer replies are re-prompted by code without another model call.
+The graph saves an approved plan before asking for confirmation. The stored payload includes the plan, intent, and retrieved clause IDs. SHA-256 detects changes to the serialized payload between turns; it is an integrity check, not a keyed signature against an attacker who can rewrite both the payload and its hash in the database. Longer replies are re-prompted by code without another model call.
 
 On confirmation, the plan is checked again against current facts. Each action receives a SHA-256 idempotency key derived from the pending plan ID and action index. A repeated execution of the same action therefore replays the database result instead of creating a second refund. Tool calls for a multi-action return/refund are separate transactions. If return creation succeeds but a later refund call fails, the return can remain created and the reply reports an execution failure; this is a prototype limitation.
 
 LLM network outages return an unavailable response and do not execute a plan. Invalid triage output becomes unclear; invalid planner output fails closed. A plan that changes state between proposal and confirmation is blocked during re-verification.
 
-## Evaluation design and current scripted results
+## Evaluation design and scripted results
 
 The offline runner uses 32 named scenarios, fresh seeded databases, and scripted LLM outputs. It compares the guarded path with a baseline profile that receives the same scenario requests and can directly call the shared write tools. Three repeated runs are saved in `reports/phase1-scripted-evaluation.json`.
 
@@ -122,7 +122,9 @@ The offline runner uses 32 named scenarios, fresh seeded databases, and scripted
 | pass^3 | 100% | 46.9% |
 | Mean tool calls on successful cases | 2.22 | 0.73 |
 
-These are deterministic architecture regression results, not statistical evidence about LLM reliability. Repeating a scripted case checks reproducibility, so pass^3 is expected to equal task success for this benchmark. The baseline actions are intentionally exercised without a code-enforced confirmation/verifier boundary; do not interpret this as a measured contest between live agents. The benchmark does not score response wording or natural-language classification quality.
+These are deterministic architecture regression results, not statistical evidence about LLM reliability. Repeating a scripted case checks reproducibility, so pass^3 is expected to equal task success for this benchmark. The baseline actions are intentionally scripted and exercised without a code-enforced confirmation/verifier boundary; this is not a measured contest between live agents. The benchmark does not score response wording or natural-language classification quality.
+
+The provider-backed runner is `scripts/live_eval.py`, implemented in `src/shopsense/evaluation/`. It compares the pipeline and baseline on the same configured model across 41 scenarios, each with a fresh seeded temporary database. The default customer turns are scripted. `--user simulated` selects 12 LLM-played personas. The evaluator checks final database state; scripted pipeline trials also have expected outcome, clause, reply-text and call-limit checks, while simulated trials use state success for full task success. Runs save resumable JSON and Markdown reports under `reports/live/`. See [evaluation](evaluation.md) for metric definitions, commands, and provider quota guidance.
 
 ## Local setup and commands
 
@@ -136,7 +138,7 @@ pytest -q
 python scripts/evaluate.py --trials 3 --output data/evaluation.json
 ```
 
-The offline evaluation makes no network calls. `scripts/live_smoke.py` uses the configured OpenAI-compatible provider and should be treated as a separate, provider-backed check. The application can point at a local OpenAI-compatible server by configuring its endpoint and model in `.env`.
+The offline evaluation makes no network calls. `scripts/live_eval.py` makes provider-backed calls using the configured model; check provider limits and pricing before running a large evaluation. The application can point at a local OpenAI-compatible server by configuring its endpoint and model in `.env`.
 
 ## Key files
 
@@ -147,7 +149,8 @@ src/shopsense/db/           schema, SQLite connection, repository, seed data
 src/shopsense/policy/       policy clause loader and BM25 retrieval
 policies/store_policy.md    clause text and stable clause IDs
 scripts/evaluate.py         offline 32-scenario comparison
-scripts/live_smoke.py       provider-backed smoke scenarios
+scripts/live_eval.py        provider-backed pipeline/baseline evaluation
+src/shopsense/evaluation/   scenarios, runner, judging, metrics and reports
 tests/                      unit, safety-boundary, and end-to-end checks
 ```
 
@@ -156,6 +159,6 @@ tests/                      unit, safety-boundary, and end-to-end checks
 - The SQLite data and payments are mock data; this is not a production customer-support system.
 - Returns cover a whole order, not individual items.
 - Authentication is an assumption represented by the `customer_id` passed into a session.
-- A six-conversation Groq-backed smoke run was completed on 2026-10-08. All six passed their final database-state assertions. This confirms basic provider integration and the tested flows, but it is not a repeated-trial benchmark and does not establish general live-model reliability.
+- Provider-backed pipeline and baseline behavior is evaluated by `scripts/live_eval.py`; the scripted suite remains a deterministic regression benchmark. Live outcomes depend on the configured provider and model, and simulated customers are not real users. See [evaluation.md](evaluation.md) for the evaluation design and run instructions.
 - Write tools trust the guarded application path by design. Production hardening would require enforcing authorization and policy closer to the database boundary, plus resolving atomicity for multi-step returns.
 - Human escalation, fraud detection, voice, and multiple languages are outside scope.
