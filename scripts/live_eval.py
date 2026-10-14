@@ -3,12 +3,15 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from shopsense.clock import FROZEN_TODAY
 from shopsense.config import SIMULATOR_TEMPERATURE, load_settings
-from shopsense.evaluation.report import utc_stamp, write_report
+from shopsense.evaluation.metrics import aggregate, record_tokens
+from shopsense.evaluation.report import METRIC_NAMES, utc_stamp, write_report
 from shopsense.evaluation.runner import run_simulated_trial, run_trial
 from shopsense.evaluation.scenarios import Scenario, all_scenarios
 from shopsense.evaluation.simulated import SIMULATED
@@ -24,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="reports/live")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--resume")
+    parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--user", choices=("scripted", "simulated"), default="scripted")
     return parser.parse_args()
 
@@ -34,16 +38,50 @@ def main() -> int:
     if args.list:
         _print_scenarios(scenarios, personas, args.user)
         return 0
+    _validate_args(args)
+    settings = load_settings()
+    metadata, records, report_base = _load_run(args, settings)
+    code, used = _run_work(args, scenarios, personas, settings, metadata, records, report_base)
+    json_path, md_path = write_report(report_base, metadata, records, args.trials)
+    print(f"Reports: {json_path} and {md_path}")
+    print(f"Tokens used in this invocation: {used}")
+    _print_summary(records)
+    final_code = _exit_code(records)
+    return 2 if final_code == 2 else code or final_code
+
+
+def _validate_args(args: argparse.Namespace) -> None:
     if args.trials < 1:
         raise SystemExit("--trials must be at least 1")
+    if args.max_tokens is not None and args.max_tokens < 1:
+        raise SystemExit("--max-tokens must be at least 1")
     clock_override = os.getenv("SHOPSENSE_TODAY")
     if clock_override and clock_override != FROZEN_TODAY.isoformat():
         raise SystemExit(f"SHOPSENSE_TODAY must be {FROZEN_TODAY.isoformat()} for this evaluation")
-    selected = _select(scenarios, args.only, args.category)
-    settings = load_settings()
-    llm = build_llm(settings)
-    simulator_llm = build_simulator_llm(settings) if args.user == "simulated" else None
-    systems = ("pipeline", "baseline") if args.system == "both" else (args.system,)
+
+
+def _load_run(args: argparse.Namespace, settings: Any) -> tuple[dict, list[dict], Path]:
+    metadata = _metadata(settings, args)
+    if not args.resume:
+        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", settings.llm_model).strip("-") or "model"
+        return metadata, [], _report_base(args.output_dir, metadata["created_at"], slug, args.user)
+    report_path = Path(args.resume)
+    old = json.loads(report_path.read_text())
+    old_metadata = old.get("metadata", {})
+    for key in ("model", "user"):
+        if old_metadata.get(key) != metadata[key]:
+            raise SystemExit(
+                f"Cannot resume: report {key} {old_metadata.get(key)!r} differs "
+                f"from current {metadata[key]!r}"
+            )
+    return (
+        _resume_metadata(old_metadata, args.trials),
+        old.get("trials", []),
+        report_path.with_suffix(""),
+    )
+
+
+def _metadata(settings: Any, args: argparse.Namespace) -> dict:
     metadata = {
         "model": settings.llm_model,
         "provider_host": urlparse(settings.llm_base_url).hostname or "",
@@ -54,54 +92,126 @@ def main() -> int:
     }
     if args.user == "simulated":
         metadata["simulator_temperature"] = SIMULATOR_TEMPERATURE
-    if args.resume:
-        report_path = Path(args.resume)
-        old = json.loads(report_path.read_text())
-        records = old.get("trials", [])
-        metadata = _resume_metadata(old.get("metadata", metadata), args.trials)
-        report_base = report_path.with_suffix("")
-    else:
-        records = []
-        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", settings.llm_model).strip("-") or "model"
-        report_base = _report_base(args.output_dir, metadata["created_at"], slug, args.user)
-    work = [
+    return metadata
+
+
+def _run_work(
+    args: argparse.Namespace,
+    scenarios: tuple[Scenario, ...],
+    personas: dict,
+    settings: Any,
+    metadata: dict,
+    records: list[dict],
+    report_base: Path,
+) -> tuple[int, int]:
+    selected = _select(scenarios, args.only, args.category)
+    systems = ("pipeline", "baseline") if args.system == "both" else (args.system,)
+    work = _work_items(systems, selected, args.trials)
+    llm = build_llm(settings)
+    simulator_llm = build_simulator_llm(settings) if args.user == "simulated" else None
+    used = 0
+    for index, item in enumerate(work, 1):
+        if _run_item(
+            item,
+            index,
+            work,
+            args,
+            personas,
+            settings,
+            llm,
+            simulator_llm,
+            metadata,
+            records,
+            report_base,
+        ):
+            result = records[-1]
+            used += record_tokens(result)
+            if _stop_reason(result, used, args.max_tokens):
+                write_report(report_base, metadata, records, args.trials)
+                return 3, used
+    return 0, used
+
+
+def _work_items(
+    systems: tuple[str, ...], scenarios: list[Scenario], trials: int
+) -> list[tuple[str, Scenario, int]]:
+    return [
         (system, scenario, trial)
+        for trial in range(1, trials + 1)
+        for scenario in scenarios
         for system in systems
-        for scenario in selected
-        for trial in range(1, args.trials + 1)
     ]
-    for index, (system, scenario, trial) in enumerate(work, 1):
-        key = (system, scenario.id, trial)
-        existing = next(
-            (r for r in records if (r["system"], r["scenario"], r["trial"]) == key), None
+
+
+def _run_item(
+    item: tuple[str, Scenario, int],
+    index: int,
+    work: list[tuple[str, Scenario, int]],
+    args: argparse.Namespace,
+    personas: dict,
+    settings: Any,
+    llm: Any,
+    simulator_llm: Any,
+    metadata: dict,
+    records: list[dict],
+    report_base: Path,
+) -> bool:
+    system, scenario, trial = item
+    key = (system, scenario.id, trial)
+    existing = next((r for r in records if (r["system"], r["scenario"], r["trial"]) == key), None)
+    if existing and existing["status"] != "infra_error":
+        return False
+    save = _save_record(key, metadata, records, report_base, args.trials)
+    if args.user == "simulated":
+        result = run_simulated_trial(
+            settings,
+            llm,
+            simulator_llm,
+            system,
+            scenario,
+            personas[scenario.id],
+            trial,
+            settings.llm_api_key,
+            save,
         )
-        if existing and existing["status"] != "infra_error":
-            continue
+    else:
+        result = run_trial(settings, llm, system, scenario, trial, settings.llm_api_key, save)
+    _print_progress(index, len(work), system, scenario, trial, result, args.user)
+    return True
 
-        def save(result: dict) -> None:
-            records[:] = [r for r in records if (r["system"], r["scenario"], r["trial"]) != key]
-            records.append(dict(result))
-            write_report(report_base, metadata, records, args.trials)
 
-        if args.user == "simulated":
-            result = run_simulated_trial(
-                settings,
-                llm,
-                simulator_llm,
-                system,
-                scenario,
-                personas[scenario.id],
-                trial,
-                settings.llm_api_key,
-                save,
-            )
-        else:
-            result = run_trial(settings, llm, system, scenario, trial, settings.llm_api_key, save)
-        _print_progress(index, len(work), system, scenario, trial, result, args.user)
-    json_path, md_path = write_report(report_base, metadata, records, args.trials)
-    print(f"Reports: {json_path} and {md_path}")
-    _print_summary(records)
-    return _exit_code(records)
+def _save_record(
+    key: tuple[str, str, int],
+    metadata: dict,
+    records: list[dict],
+    report_base: Path,
+    trials: int,
+) -> Callable[[dict], None]:
+    def save(result: dict) -> None:
+        records[:] = [r for r in records if (r["system"], r["scenario"], r["trial"]) != key]
+        records.append(dict(result))
+        write_report(report_base, metadata, records, trials)
+
+    return save
+
+
+def _stop_reason(record: dict, used: int, max_tokens: int | None) -> bool:
+    if (
+        record["status"] == "infra_error"
+        and "provider quota exhausted" in (record.get("error") or "").lower()
+    ):
+        print(
+            "Stopped: provider quota exhausted. Re-run the same command with --resume "
+            "<json_path> after the daily limit resets."
+        )
+        return True
+    if max_tokens is not None and used >= max_tokens:
+        print(
+            "Stopped: Token budget reached. Re-run the same command with --resume "
+            "<json_path> after the daily limit resets."
+        )
+        return True
+    return False
 
 
 def _select(
@@ -174,8 +284,6 @@ def _print_progress(
 
 
 def _print_summary(records: list[dict]) -> None:
-    from shopsense.evaluation.metrics import aggregate
-
     result = aggregate(records, max((r["trial"] for r in records), default=1))
     systems = list(result)
     _print_table("Overall", systems, {system: result[system]["overall"] for system in systems})
@@ -186,26 +294,8 @@ def _print_summary(records: list[dict]) -> None:
 
 
 def _print_table(title: str, systems: list[str], values: dict) -> None:
-    metrics = (
-        "task_success_state",
-        "task_success_full",
-        "policy_violation_rate",
-        "injection_resistance_rate",
-        "unconfirmed_write_rate",
-        "false_block_rate",
-        "clause_accuracy",
-        "tool_call_efficiency",
-        "mean_llm_calls",
-        "mean_turns",
-        "pass_k",
-        "p50_turn_latency_ms",
-        "p95_turn_latency_ms",
-        "total_tokens",
-        "error_count",
-        "infra_error_count",
-    )
     print(f"{title}\nMetric | " + " | ".join(systems))
-    for metric in metrics:
+    for metric in METRIC_NAMES:
         cells = [_console_value(values[system].get(metric)) for system in systems]
         print(f"{metric} | " + " | ".join(cells))
 

@@ -260,7 +260,34 @@ Mean tool calls on successful cases & 2.22 & 0.73 \\
 
 \textbf{Interpretation:} for these fixed scripts, the deterministic verifier and separate confirmation turn blocked all invalid guarded writes. The baseline profile can call its write tools directly, so several policy-invalid plans mutate the database. The guarded tool-call average is higher because it reads, verifies, confirms, and executes; the lower baseline average comes with lower task success and more violations.
 
-\textbf{Important limitation:} all model responses and baseline actions in this benchmark are scripted. The three runs repeat identical inputs, so $pass^3$ is a reproducibility check and naturally tracks task success. These results do not measure natural language understanding, response quality, or live-model variability. They are software regression results, not research evidence about performance of live agents. A separate Groq-backed six-conversation smoke run completed its final database-state assertions on 2026-10-08; this confirms basic integration for those cases, not general model reliability.
+\textbf{Important limitation:} all model responses and baseline actions in this benchmark are scripted. The three runs repeat identical inputs, so $pass^3$ is a reproducibility check and naturally tracks task success. These results do not measure natural language understanding, response quality, or live-model variability. They are software regression results, not research evidence about performance of live agents.
+
+The provider-backed evaluator is \path{scripts/live_eval.py}, with implementation in \path{src/shopsense/evaluation/}. It uses one configured model for pipeline and baseline across 41 scenarios, with a fresh seeded database for each trial. Scripted customer turns are used by default; \texttt{--user simulated} selects 12 LLM-played personas. Trials are judged against database state, with additional reply checks for scripted pipeline trials. Reports are resumable JSON and Markdown. See \path{reports/final/scripted-openai-gpt-oss-20b.md} and \path{reports/final/scripted-openai-gpt-oss-20b.json} for the available run. No simulated-customer report was produced because provider quota stopped the run sequence.
+
+\subsection{Provider-backed results: quota-limited}
+
+The available run used \texttt{openai/gpt-oss-20b} on \texttt{api.groq.com}, dated 2026-10-10, with the business clock fixed at 2026-10-01. One trial per scenario was requested. The pipeline has 41 valid trials and no infrastructure errors. The baseline has two valid trials (N1 and P3) and 39 infrastructure errors, all HTTP 429 quota errors. This is not a complete head-to-head comparison.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Pipeline} & \textbf{Baseline} \\
+\midrule
+Task success, state & 1.000 & 1.000 \\
+$pass^1$ & 1.000 & 1.000 \\
+Policy-violation rate & 0.000 & 0.000 \\
+Injection resistance & 1.000 & n/a \\
+Unconfirmed-write rate & 0.000 & 0.000 \\
+Task success, full & 1.000 & n/a \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Baseline rates are based only on two valid records; its injection rate is unavailable because none of its injection trials completed. The pipeline's full and state success rates both equal 1.000 in the scripted run. The two valid baseline transcripts were an information answer and a cancellation after the customer explicitly confirmed. The baseline lacks a code-enforced confirmation gate, though its prompt asks the model to request confirmation.
+
+The report records 87,097 pipeline tokens and 4,514 baseline tokens, mean LLM calls of 1.805 and 2.500, p50 latency of 5,904.952 ms and 28,728.934 ms, and p95 latency of 19,971.585 ms and 63,973.061 ms, respectively. These values are not a like-for-like cost or latency comparison because only two baseline trials completed. All 39 failed trial IDs (N2--N10, P1, P2, P4, A1--A7, R1--R11, U1--U3, I1--I6) failed with provider quota errors; no pipeline trial failed.
+
+\textbf{Limitations:} one model and provider; provider rate limits; a scenario set authored within the same project as the system; one requested trial and only two valid baseline observations; and no completed simulated-customer run. The simulator uses the same configured model family at temperature 0.7. The baseline prompt includes a JSON-only instruction because it has no native function-calling interface, and malformed-output retries are used by both systems. Infrastructure errors are excluded from metric denominators, so they reduce coverage rather than count as behavioral failures. The offline \path{scripts/evaluate.py} suite is deterministic and scripts baseline actions, so it is not an LLM head-to-head. These limitations make the baseline, cost/latency, and simulated-customer comparisons inconclusive; the pipeline rates describe only the tested scenarios and this single trial.
 
 \section{Running and navigating the project}
 
@@ -276,7 +303,7 @@ pytest -q
 python scripts/evaluate.py --trials 3 --output reports/evaluation.json
 \end{lstlisting}
 
-The offline evaluation uses fake LLM responses and does not contact a model provider. The CLI chat requires a configured OpenAI-compatible model; that may be a local endpoint. Do not run the live smoke script unless an endpoint is configured and you intend that provider-backed call.
+The offline evaluation uses fake LLM responses and does not contact a model provider. The CLI chat and live evaluation require a configured OpenAI-compatible model; that may be a local endpoint. Live evaluation calls the provider and can consume quota; use \texttt{--only} for a subset and \texttt{--resume} to continue a saved report.
 
 \begin{longtable}{p{0.34\textwidth}p{0.57\textwidth}}
 \toprule
@@ -295,7 +322,8 @@ The offline evaluation uses fake LLM responses and does not contact a model prov
 \path{policies/store_policy.md} & Versionable policy clauses and citation IDs. \\
 \path{tests/} & Unit, architecture-boundary, verifier, and end-to-end tests. \\
 \path{scripts/evaluate.py} & Offline scripted comparison. \\
-\path{scripts/live_smoke.py} & Provider-backed smoke checks. \\
+\path{scripts/live_eval.py} & Provider-backed pipeline/baseline evaluation. \\
+\path{src/shopsense/evaluation/} & Scenarios, runner, database-state judging, metrics, and reports. \\
 \bottomrule
 \end{longtable}
 
@@ -307,7 +335,7 @@ The offline evaluation uses fake LLM responses and does not contact a model prov
 \item Authentication is assumed. The session receives a customer ID from its caller.
 \item The business-policy verifier is in the application path. Write tools intentionally trust that path for fair baseline comparison. Production hardening should add independent authorization and policy enforcement at the write boundary.
 \item Multi-step return/refund operations are not atomic across MCP calls.
-\item The current evaluation is a deterministic regression benchmark. A later experiment can use a local model with repeated trials, held-out scenarios, and a logged model/configuration to measure actual run-to-run reliability.
+\item The offline scripted evaluation is a deterministic regression benchmark. The provider-backed evaluation in \path{scripts/live_eval.py} runs the guarded pipeline and baseline with the configured model and records repeated trials; outcomes remain dependent on the provider, model, and scenario set. The simulated customer is model-played and is not a substitute for trials with real users.
 \end{itemize}
 
 \end{document}

@@ -140,7 +140,7 @@ def test_non_retryable_provider_errors_become_unavailable(status):
         llm.complete("", "")
 
 
-def _tool_use_failed_error():
+def _malformed_output_error(code):
     response = httpx.Response(
         400,
         request=httpx.Request("POST", "https://provider.example/chat"),
@@ -148,15 +148,16 @@ def _tool_use_failed_error():
     return llm_module.APIStatusError(
         "tool call rejected",
         response=response,
-        body={"error": {"code": "tool_use_failed", "message": "model called a tool"}},
+        body={"error": {"code": code, "message": "model output rejected"}},
     )
 
 
-def test_tool_use_failed_retries_as_malformed_json():
+@pytest.mark.parametrize("code", ["tool_use_failed", "json_validate_failed"])
+def test_malformed_output_retries_as_invalid_json(code):
     class Output(BaseModel):
         ok: bool
 
-    completions = _Completions([_tool_use_failed_error()])
+    completions = _Completions([_malformed_output_error(code)])
     llm = OpenAICompatibleLLM("", "", "model", False, client=_Client(completions))
 
     result = complete_json(llm, "system", "first request", Output, 1)
@@ -166,11 +167,11 @@ def test_tool_use_failed_retries_as_malformed_json():
     assert "previous reply was invalid" in completions.calls[1]["messages"][1]["content"]
 
 
-def test_persistent_tool_use_failed_ends_as_output_error():
+def test_persistent_json_validation_failure_ends_as_output_error():
     class Output(BaseModel):
         ok: bool
 
-    completions = _Completions([_tool_use_failed_error(), _tool_use_failed_error()])
+    completions = _Completions([_malformed_output_error("json_validate_failed")] * 2)
     llm = OpenAICompatibleLLM("", "", "model", False, client=_Client(completions))
 
     with pytest.raises(LLMOutputError):

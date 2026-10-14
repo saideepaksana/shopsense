@@ -7,8 +7,27 @@ def aggregate(records: list[dict], trials: int) -> dict:
     result = {}
     for system in systems:
         selected = [r for r in records if r["system"] == system]
+        overall = _system_metrics(selected, trials, system == "pipeline")
+        if system == "baseline":
+            valid = [r for r in selected if r["status"] not in {"error", "infra_error"}]
+            reasons = [
+                turn.get("trace", {}).get("stop_reason")
+                for record in valid
+                for turn in record.get("turns", [])
+            ]
+            overall["stop_reasons"] = {
+                reason: reasons.count(reason)
+                for reason in (
+                    "replied",
+                    "invalid_output",
+                    "unknown_action",
+                    "bad_tool_call",
+                    "max_steps",
+                )
+                if reason in reasons
+            }
         result[system] = {
-            "overall": _system_metrics(selected, trials, system == "pipeline"),
+            "overall": overall,
             "categories": {
                 category: _system_metrics(
                     [r for r in selected if r["category"] == category],
@@ -64,7 +83,11 @@ def _system_metrics(records: list[dict], trials: int, pipeline: bool) -> dict:
         "clause_accuracy": _clause_accuracy(clause_trials) if pipeline else None,
         "pass_k": pass_k,
         "tool_call_efficiency": _mean(
-            [sum(t["tool_calls"] for t in r["turns"]) for r in successful]
+            [
+                sum(t["tool_calls"] for t in r["turns"])
+                for r in successful
+                if r.get("expects_change", False)
+            ]
         ),
         "mean_llm_calls": _mean([_calls(r) for r in valid]),
         "mean_turns": _mean([r.get("turns_used", 0) for r in valid])
@@ -72,10 +95,20 @@ def _system_metrics(records: list[dict], trials: int, pipeline: bool) -> dict:
         else None,
         "p50_turn_latency_ms": _percentile(latencies, 0.50),
         "p95_turn_latency_ms": _percentile(latencies, 0.95),
-        "total_tokens": sum(_tokens(r) for r in records),
+        "total_tokens": sum(record_tokens(r) for r in records),
+        "simulator_tokens": sum(_simulator_tokens(r) for r in records),
         "error_count": sum(r["status"] == "error" for r in records),
         "infra_error_count": sum(r["status"] == "infra_error" for r in records),
     }
+
+
+def record_tokens(record: dict) -> int:
+    return _tokens(record) + _simulator_tokens(record)
+
+
+def _simulator_tokens(record: dict) -> int:
+    usage = record.get("simulator_usage", {})
+    return usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
 
 
 def _calls(record: dict) -> int:
