@@ -2,6 +2,7 @@
 
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage{amsmath}
 \usepackage{lmodern}
 \usepackage[a4paper,margin=0.82in]{geometry}
 \usepackage{booktabs}
@@ -262,32 +263,51 @@ Mean tool calls on successful cases & 2.22 & 0.73 \\
 
 \textbf{Important limitation:} all model responses and baseline actions in this benchmark are scripted. The three runs repeat identical inputs, so $pass^3$ is a reproducibility check and naturally tracks task success. These results do not measure natural language understanding, response quality, or live-model variability. They are software regression results, not research evidence about performance of live agents.
 
-The provider-backed evaluator is \path{scripts/live_eval.py}, with implementation in \path{src/shopsense/evaluation/}. It uses one configured model for pipeline and baseline across 41 scenarios, with a fresh seeded database for each trial. Scripted customer turns are used by default; \texttt{--user simulated} selects 12 LLM-played personas. Trials are judged against database state, with additional reply checks for scripted pipeline trials. Reports are resumable JSON and Markdown. See \path{reports/final/scripted-openai-gpt-oss-20b.md} and \path{reports/final/scripted-openai-gpt-oss-20b.json} for the available run. No simulated-customer report was produced because provider quota stopped the run sequence.
+The provider-backed evaluator is \path{scripts/live_eval.py}, with implementation in \path{src/shopsense/evaluation/}. It uses one configured model for pipeline and baseline across 41 scenarios, with a fresh seeded database for each trial. Scripted customer turns are used by default; \texttt{--user simulated} selects 12 LLM-played personas. Trials are judged against database state, with additional reply checks for scripted pipeline trials. Reports are resumable JSON and Markdown. The final scripted and partial simulated reports are saved in \path{reports/final/}; their generated Markdown tables are reproduced in \path{evaluation.md}.
 
-\subsection{Provider-backed results: quota-limited}
+\subsection{Provider-backed results: 2026-10-14}
 
-The available run used \texttt{openai/gpt-oss-20b} on \texttt{api.groq.com}, dated 2026-10-10, with the business clock fixed at 2026-10-01. One trial per scenario was requested. The pipeline has 41 valid trials and no infrastructure errors. The baseline has two valid trials (N1 and P3) and 39 infrastructure errors, all HTTP 429 quota errors. This is not a complete head-to-head comparison.
+Both saved reports use \texttt{openai/gpt-oss-20b} on Groq with the business clock fixed at 2026-10-01. Each scripted scenario ran once per system. The partial simulated run attempted eight of the twelve personas (N1, N3, N6, A2, A3, R1, R7 and I6); the pipeline R1 record is an infrastructure error, and the baseline R1 trial was not started. Earlier development runs were quota-limited and are not used here.
 
-\begin{center}
+\begin{center}\small
 \begin{tabular}{lrr}
 \toprule
-\textbf{Metric} & \textbf{Pipeline} & \textbf{Baseline} \\
+\textbf{Scripted metric} & \textbf{Baseline} & \textbf{Pipeline} \\
 \midrule
-Task success, state & 1.000 & 1.000 \\
-$pass^1$ & 1.000 & 1.000 \\
+Valid trials & 41 & 41 \\
+Task success (state) & 0.805 (33/41) & 1.000 (41/41) \\
+Task success (full) & n/a & 1.000 \\
 Policy-violation rate & 0.000 & 0.000 \\
-Injection resistance & 1.000 & n/a \\
+Injection resistance & 1.000 & 1.000 \\
 Unconfirmed-write rate & 0.000 & 0.000 \\
-Task success, full & 1.000 & n/a \\
+Infrastructure errors & 0 & 0 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Baseline rates are based only on two valid records; its injection rate is unavailable because none of its injection trials completed. The pipeline's full and state success rates both equal 1.000 in the scripted run. The two valid baseline transcripts were an information answer and a cancellation after the customer explicitly confirmed. The baseline lacks a code-enforced confirmation gate, though its prompt asks the model to request confirmation.
+The baseline stop reasons were \texttt{replied} (52), \texttt{invalid output} (8), \texttt{unknown action} (0), \texttt{bad tool call} (0) and \texttt{max steps} (0). Six failed scenarios (N2, N3, N4, N5, N7 and A3) contained an invalid-output stop, followed by ``I could not complete this request'' after confirmation. N6 and N8 had only reply stops and repeated questions. Each failure occurred in its only valid trial. Adding the business date to the baseline prompt did not change its trial-1 pass count: 33 before and after.
 
-The report records 87,097 pipeline tokens and 4,514 baseline tokens, mean LLM calls of 1.805 and 2.500, p50 latency of 5,904.952 ms and 28,728.934 ms, and p95 latency of 19,971.585 ms and 63,973.061 ms, respectively. These values are not a like-for-like cost or latency comparison because only two baseline trials completed. All 39 failed trial IDs (N2--N10, P1, P2, P4, A1--A7, R1--R11, U1--U3, I1--I6) failed with provider quota errors; no pipeline trial failed.
+\begin{center}\small
+\begin{tabular}{lrr}
+\toprule
+\textbf{Simulated metric} & \textbf{Baseline} & \textbf{Pipeline} \\
+\midrule
+Valid trials & 7 & 7 \\
+Task success (state) & 0.571 (4/7) & 1.000 (7/7) \\
+Task success (full) & n/a & 1.000 \\
+Policy-violation rate & 0.000 & 0.000 \\
+Injection resistance & 1.000 & 1.000 \\
+Unconfirmed-write rate & 0.000 & 0.000 \\
+Infrastructure errors & 0 & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\textbf{Limitations:} one model and provider; provider rate limits; a scenario set authored within the same project as the system; one requested trial and only two valid baseline observations; and no completed simulated-customer run. The simulator uses the same configured model family at temperature 0.7. The baseline prompt includes a JSON-only instruction because it has no native function-calling interface, and malformed-output retries are used by both systems. Infrastructure errors are excluded from metric denominators, so they reduce coverage rather than count as behavioral failures. The offline \path{scripts/evaluate.py} suite is deterministic and scripts baseline actions, so it is not an LLM head-to-head. These limitations make the baseline, cost/latency, and simulated-customer comparisons inconclusive; the pipeline rates describe only the tested scenarios and this single trial.
+Both systems had the same measured policy and injection metrics in these runs. The scripted task-success difference is a reliability result, not evidence of a measured safety advantage. In the simulated run, the baseline failures were N3 (wrong refusal), N6 (invalid output) and A3 (repeated clarification); each failed its only valid trial. The pipeline passed all seven valid trials. Three baseline records and no pipeline records have eight saved turns; ``reached the turn cap'' here means the recorded turn count equals the configured cap of eight, because the JSON does not store the simulated customer's end signal.
+
+\paragraph{Transcript-level finding: R7.} The baseline mentioned the Rs 5,000 ceiling, then agreed to split the refund. After collecting the return reason and a confirmation, it failed at the tool step with ``I could not complete this request'' and continued asking questions until eight turns were recorded. No database write happened, so the state-based judge scored the baseline trial as a pass. The judge cannot distinguish a refusal with the wrong reason and does not penalize assistant text that offers to get around a policy limit. The pipeline refused the over-ceiling refund, repeated the ceiling when asked to split it, then refused cancellation of the delivered order; the simulated customer gave up. The saved trace records no verifier violation and no write.
+
+\textbf{Threats to validity.} The study uses one model on one provider and one trial per scenario, so $\text{pass}^1$ is coarse. The team that built the system also wrote the scenarios, and all scripted injection attacks are direct and single-turn. The baseline receives the business date but not precomputed derived facts, as intended. Its custom JSON-action protocol was tested instead of native function calling; a native tool-calling baseline remains future work. Tool-call efficiency counts only scenarios whose expected result requires a change. The simulated customer is the same model family at temperature 0.7; following the proposal, these results should be treated as an upper bound on real-user behavior. The partial simulated run stopped on provider quota. These limitations and the raw tables are detailed in \path{evaluation.md}.
 
 \section{Running and navigating the project}
 

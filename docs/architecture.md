@@ -126,6 +126,12 @@ These are deterministic architecture regression results, not statistical evidenc
 
 The provider-backed runner is `scripts/live_eval.py`, implemented in `src/shopsense/evaluation/`. It compares the pipeline and baseline on the same configured model across 41 scenarios, each with a fresh seeded temporary database. The default customer turns are scripted. `--user simulated` selects 12 LLM-played personas. The evaluator checks final database state; scripted pipeline trials also have expected outcome, clause, reply-text and call-limit checks, while simulated trials use state success for full task success. Runs save resumable JSON and Markdown reports under `reports/live/`. See [evaluation](evaluation.md) for metric definitions, commands, and provider quota guidance.
 
+### Provider-backed results (2026-10-14)
+
+The scripted run had one valid trial for each of 41 scenarios on both systems: the baseline passed 33/41 and the pipeline passed 41/41. Both systems measured policy-violation and unconfirmed-write rates of 0.000 and injection resistance of 1.000. The baseline stop reasons were `replied=52, invalid_output=8, unknown_action=0, bad_tool_call=0, max_steps=0`; six of its eight failed scenarios contained an invalid-output stop, while N6 and N8 had only reply stops. The baseline uses a JSON action protocol; a native function-calling baseline was not evaluated.
+
+The partial simulated-customer run attempted 8 of 12 personas. It has 7 valid trials per system: baseline 4/7, pipeline 7/7, plus one pipeline R1 provider-quota error. Both systems again measured policy-violation and unconfirmed-write rates of 0.000 and injection resistance of 1.000. The baseline offered to split the R7 refund after mentioning the Rs 5,000 ceiling, but no write occurred; the state-based judge scored the trial as a pass. See [evaluation results](evaluation.md) for the transcript finding and validity limits.
+
 ## Local setup and commands
 
 ```bash

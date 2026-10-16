@@ -1,0 +1,529 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}\usepackage{mathpazo}\renewcommand{\ttdefault}{pcr}\usepackage[scaled=0.9]{helvet}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{booktabs,array,tabularx,enumitem,xcolor,float,caption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.16}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{listings}
+% Shared TikZ setup, used by both the report and the slides
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric,calc}
+\definecolor{llmfill}{HTML}{FDE9CF}
+\definecolor{llmline}{HTML}{C46A00}
+\definecolor{codefill}{HTML}{E4EEF9}
+\definecolor{codeline}{HTML}{2B5C9E}
+\definecolor{privfill}{HTML}{F9DCDC}
+\definecolor{privline}{HTML}{B22A2A}
+\definecolor{datafill}{HTML}{E3F3E6}
+\definecolor{dataline}{HTML}{2E7D43}
+\definecolor{greybox}{HTML}{F2F2F2}
+\tikzset{
+  >={Stealth[length=2.2mm]},
+  blk/.style={draw=codeline, fill=codefill, rounded corners=2pt, minimum height=9mm,
+              minimum width=28mm, align=center, font=\small, line width=0.6pt},
+  llm/.style={blk, draw=llmline, fill=llmfill},
+  priv/.style={blk, draw=privline, fill=privfill},
+  data/.style={blk, draw=dataline, fill=datafill},
+  plain/.style={blk, draw=black!60, fill=greybox},
+  flow/.style={->, line width=0.7pt},
+  dflow/.style={->, dashed, line width=0.7pt},
+  zone/.style={draw, dashed, rounded corners=4pt, inner sep=3mm, line width=0.7pt},
+  lbl/.style={font=\scriptsize, text=black!75},
+}
+
+
+\setlength{\parskip}{4pt}
+\setlist{itemsep=1pt,topsep=3pt}
+\captionsetup{font=small,labelfont=bf}
+\pagestyle{fancy}\fancyhf{}\fancyhead[L]{\small\textit{ShopSense}}\fancyhead[R]{\small\thepage}
+\renewcommand{\arraystretch}{1.15}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,framerule=0.3pt,
+  backgroundcolor=\color{black!3},xleftmargin=2pt,xrightmargin=2pt}
+
+\title{\textbf{ShopSense}\\[4pt]\large A Guarded Customer-Care Assistant for Order Operations\\[2pt]
+\normalsize Project Report}
+\author{Sai Deepak (CS23BTECH11055) \quad Harshith (CS23BTECH11045)}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Customer-care assistants that can cancel orders and issue refunds can make costly mistakes. ShopSense is a prototype assistant for a mock online store that tries to make these actions safer by design instead of by prompting alone. It splits the work into small stages. The only stage that reads customer text can use no tools. The only stage that can write to the database never sees customer text. A rule-based verifier checks every plan before anything runs, and the customer must confirm in plain ``yes'' or ``no'' before any change is made. We compare this guarded pipeline with a single agent that has all the tools, using the same model (\texttt{openai/gpt-oss-20b} on Groq) and the same 41 scripted scenarios. The pipeline reached the expected database state in 41 of 41 scenarios. The baseline reached it in 33 of 41. Neither system made an unsafe change in our tests, so the main measured gain is reliability, not a drop in policy violations. The results come from one trial per scenario, one model and scenarios we wrote ourselves, and we state these limits clearly in Section~\ref{sec:limits}.
+\end{abstract}
+
+%
+
+%--------------------------------------------------------------------
+\section{Introduction}
+%--------------------------------------------------------------------
+Online stores receive a large number of support messages: where is my order, please cancel it, I want to return this, where is my refund. Most of these follow clear rules. This makes them a good target for an AI assistant. The difficulty is that the assistant must do more than answer questions. It must act. A cancellation changes an order, and a refund changes payment records. These actions can be hard to undo.
+
+\subsection{Problem}
+A language model that is given a list of tools and a policy document can often do the right thing, but not always. It can misread the policy, accept a refund amount from the customer, skip the confirmation step, or follow an instruction hidden in the customer's message (a \emph{prompt injection}). The same request can also give different results on different runs. For a system that handles money, ``usually correct'' is not good enough.
+
+\subsection{Motivation}
+Benchmarks such as $\tau$-bench~\cite{taubench} show that tool-using agents often fail on retail tasks and are not consistent across repeated runs. Work on prompt injection~\cite{injection} motivates architectural controls, including keeping the component that reads untrusted text away from the component that can write. We wanted to build a small, complete system that follows this approach and measure whether it helps.
+
+\subsection{Research question}
+\begin{quote}
+\emph{Does a privilege-separated pipeline with explicit policy grounding make an LLM agent safer and more reliable than a single agent that holds every tool?}
+\end{quote}
+
+\subsection{What we built}
+\begin{itemize}
+  \item A customer-care assistant for a mock store that can report order status, cancel unshipped orders, create returns, issue refunds and answer policy questions.
+  \item A guarded pipeline built with LangGraph, with tools exposed through MCP servers.
+  \item A single-agent baseline with the same model, the same data and the same tools, but none of the guards.
+  \item An evaluation harness with 41 scripted scenarios and 12 LLM-played customer personas, which checks the final database state rather than only the reply text.
+  \item A test suite of 142 automated tests, including tests that enforce the architecture rules themselves.
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{Background and Related Work}
+%--------------------------------------------------------------------
+\textbf{Tool-using agent benchmarks.} $\tau$-bench~\cite{taubench} simulates a customer talking to an agent that has domain tools and a policy. It judges the agent by comparing the final database with a goal state, and it introduces $\text{pass}^k$, the chance that an agent succeeds on all of $k$ repeated trials. $\tau^2$-bench~\cite{tau2} extends this to cases where the user can also act. We borrow two ideas: checking the final database state, and reporting $\text{pass}^k$.
+
+\textbf{Securing agents against prompt injection.} Beurer-Kellner et al.~\cite{injection} describe design patterns in which untrusted input cannot trigger sensitive actions. Our privilege split follows this idea: the model that reads customer text has no tools, and the component that has write tools never receives customer text.
+
+\textbf{Commercial products.} Sierra, Intercom Fin, Zendesk AI and Salesforce Agentforce already offer support agents that can take actions~\cite{commercial}. They are closed systems, so their designs and reliability numbers cannot be reproduced. ShopSense is a small open prototype built to test one specific design idea.
+
+%--------------------------------------------------------------------
+\section{Proposed Approach}
+%--------------------------------------------------------------------
+\subsection{Design principles}
+Six rules drive the design. Each one is implemented in code, and the first four are also checked by tests.
+\begin{enumerate}
+  \item The only component that reads raw customer text (triage) has no tools.
+  \item The only component that can write to the database (the executor) never sees customer text.
+  \item Refund amounts are computed from the database. They are never taken from the customer.
+  \item A deterministic verifier with no LLM checks every plan against hard rules before anything is executed.
+  \item Writes happen only after the customer explicitly confirms, and every write is idempotent.
+  \item Every decision is stored in an audit log together with the policy clause ids that were used.
+\end{enumerate}
+
+\subsection{Architecture}
+Figure~\ref{fig:arch} shows the full flow. A customer message goes through triage, context lookup, policy retrieval, planning and verification. If the plan is an action, the system saves it and asks the customer to confirm. On the next turn it re-checks the plan against the current database and only then executes it. The language model is used in exactly two places, \texttt{triage} and \texttt{plan}. Everything else is plain code.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[blk/.append style={minimum width=33mm, minimum height=11mm}]
+\def\cx{49mm}\def\ry{26mm}
+\node[plain] (msg) at (0,0) {Customer\\message};
+\node[llm] (tri) at (\cx,0) {\textbf{triage}\\[-1pt]{\scriptsize LLM, no tools}};
+\node[blk] (ctx) at (2*\cx,0) {\textbf{fetch\_context}\\[-1pt]{\scriptsize read-only gateway}};
+\node[blk] (pol) at (3*\cx,0) {\textbf{retrieve\_policy}\\[-1pt]{\scriptsize BM25 + clause ids}};
+\node[llm] (plan) at (3*\cx,-\ry) {\textbf{plan}\\[-1pt]{\scriptsize LLM or fixed rules}};
+\node[blk] (ver) at (2*\cx,-\ry) {\textbf{verify}\\[-1pt]{\scriptsize rules V0--V10}};
+\node[blk] (conf) at (\cx,-\ry) {\textbf{request\_confirmation}\\[-1pt]{\scriptsize save pending plan}};
+\node[plain] (ask) at (0,-\ry) {Ask customer\\``yes / no''};
+\node[blk] (load) at (0,-2*\ry) {\textbf{load\_pending}\\[-1pt]{\scriptsize check hash, owner}};
+\node[blk] (rev) at (\cx,-2*\ry) {\textbf{reverify}\\[-1pt]{\scriptsize against current DB}};
+\node[priv] (exe) at (2*\cx,-2*\ry) {\textbf{execute}\\[-1pt]{\scriptsize write gateway only}};
+\node[blk] (fin) at (3*\cx,-2*\ry) {\textbf{finalize}\\[-1pt]{\scriptsize audit + memory}};
+\node[plain] (rsp) at (3*\cx,-3*\ry) {\textbf{respond}\\[-1pt]{\scriptsize templates only}};
+\draw[flow] (msg) -- (tri);
+\draw[flow] (tri) -- (ctx);
+\draw[flow] (ctx) -- (pol);
+\draw[flow] (pol) -- (plan);
+\draw[flow] (plan) -- (ver);
+\draw[flow] (ver) -- node[lbl, above]{approve} (conf);
+\draw[flow] (conf) -- (ask);
+\draw[dflow] (ask) -- node[lbl, right]{next turn} (load);
+\draw[flow] (load) -- (rev);
+\draw[flow] (rev) -- node[lbl, above]{valid} (exe);
+\draw[flow] (exe) -- (fin);
+\draw[flow] (fin) -- (rsp);
+\draw[flow, black!55] (ver.south) -- ++(0,-6.5mm) -| node[lbl, pos=0.25, above]{deny / clarify / info} (fin.north);
+\draw[flow, black!55] (rev.south) |- node[lbl, pos=0.25, above]{blocked} (rsp.west);
+\draw[flow, black!55] (ver.north) to[out=70,in=110] node[lbl, above, pos=0.5]{violation: replan once, then fail closed} (plan.north west);
+\end{tikzpicture}
+}
+\caption{The guarded pipeline. Orange boxes call the language model, blue boxes are plain code, and the red box is the only place where the database is changed. Grey arrows are the early exits.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Trust boundaries}
+Figure~\ref{fig:trust} shows who can see what. The triage model sees the customer's words but has no tools, so even a successful injection can only change the label it returns. The planner and verifier see structured data and database facts but never the raw message. The executor can write, but it only receives a plan that has already passed the verifier and has been confirmed by the customer.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\begin{tikzpicture}
+\node[llm, minimum width=44mm, minimum height=15mm] (tri) at (0,0) {\textbf{Triage}\\[-1pt]{\scriptsize reads raw customer text}\\[-2pt]{\scriptsize no tools, no database}};
+\node[blk, minimum width=50mm, minimum height=15mm] (mid) at (80mm,0) {\textbf{Planner + Verifier}\\[-1pt]{\scriptsize see intent and DB facts}\\[-2pt]{\scriptsize no raw text, no write tools}};
+\node[priv, minimum width=44mm, minimum height=15mm] (exe) at (160mm,0) {\textbf{Executor}\\[-1pt]{\scriptsize holds the only write gateway}\\[-2pt]{\scriptsize never sees customer text}};
+\draw[flow] (tri) -- node[lbl, above]{Intent} (mid);
+\draw[flow] (mid) -- node[lbl, above]{Plan} (exe);
+\node[data, minimum width=50mm] (db) at (80mm,-30mm) {SQLite database\\{\scriptsize orders, payments, returns, refunds}};
+\draw[flow, dataline] ([xshift=-8mm]db.north) -- node[lbl, left]{read} ([xshift=-8mm]mid.south);
+\draw[flow, privline] (exe.south) |- node[lbl, pos=0.75, above]{write} (db.east);
+\node[font=\scriptsize\itshape] at (0,12mm) {untrusted input};
+\node[font=\scriptsize\itshape] at (80mm,12mm) {decision logic};
+\node[font=\scriptsize\itshape] at (160mm,12mm) {privileged action};
+\end{tikzpicture}
+}
+\caption{Privilege separation. No single component both reads untrusted text and can write to the database.}
+\label{fig:trust}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+Component & Sees raw customer text & Can read database & Can write database \\
+\midrule
+Triage (LLM) & Yes & No & No \\
+Fetch context & No (gets structured intent) & Yes, read gateway only & No \\
+Planner (LLM) & No (gets structured intent) & Only the facts it is handed & No \\
+Verifier & No & Only the facts it is handed & No \\
+Executor & No & No & Yes, write gateway \\
+Responder & No & No & No \\
+\bottomrule
+\end{tabularx}
+\caption{What each component can access.}
+\end{table}
+
+%--------------------------------------------------------------------
+\section{System Design in Detail}
+%--------------------------------------------------------------------
+\subsection{Triage}
+Triage turns the customer message into a small validated record called an \texttt{Intent}: one of \texttt{order\_status}, \texttt{cancel\_order}, \texttt{return\_item}, \texttt{refund\_request}, \texttt{policy\_question} or \texttt{unclear}, plus an optional reason code and an \texttt{injection\_suspected} flag. The model returns JSON. If the JSON is invalid, we retry up to two times with the error message, and then fall back to \texttt{unclear}. The order id is not taken from the model at all. Code extracts it with a regular expression (\texttt{ORD-} followed by five digits), and if the message names two different orders it is left empty and the assistant asks which one is meant.
+
+\subsection{Fetching facts}
+The read gateway is scoped to the logged-in customer. Asking for another customer's order returns ``not found'', the same answer as for an order that does not exist. The code then computes the facts a decision needs, so the model does not do arithmetic: days since delivery, the return window (10 days, or 15 days for damaged, wrong or not-as-described items), whether any item is non-returnable, the refundable amount (paid minus already refunded), whether it is above the Rs 5,000 ceiling, and how many return refunds the customer received in the last 90 days.
+
+\subsection{Policy retrieval}
+The store policy is a Markdown file with 18 numbered clauses (for example \texttt{CAN-1}, \texttt{RET-3}, \texttt{REF-4}, \texttt{SEC-1}). We rank clauses with BM25 and keep the top few for the intent. On top of that, code adds the clauses that must be present for the current facts. For example, if the refund is above the ceiling, \texttt{REF-3} is always added. This avoids the case where retrieval misses a clause that decides the outcome. Only these clauses are shown to the planner, and the plan may cite only these ids.
+
+\subsection{Planner}
+Many requests need no model at all. Status questions, policy questions, unclear messages, missing order ids and orders that are not on the account are handled by fixed rules. The LLM planner is called only for cancel, return and refund requests on an order the customer owns. It receives the intent, the order record, the computed facts and the clauses, and it returns a plan: \texttt{approve} with a list of actions, or \texttt{deny}, together with the clause ids it used. A refund request on a delivered order with no return becomes two actions: create the return, then issue the refund, using a placeholder for the new return id.
+
+\subsection{Verifier}
+The verifier is ordinary code. It checks the plan against eleven rules (Table~\ref{tab:verifier}) and returns the list of rules that were broken. If a plan breaks a rule, the system asks the planner to try once more, and if the second plan also fails the system \emph{fails closed}: it denies the request and changes nothing.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Rule & What it checks \\
+\midrule
+V0 & Only an approved plan has actions, and an approved plan has at least one. \\
+V1 & The tools match the intent (a cancel intent may only cancel; return and refund intents may only use create-return then refund, or refund alone). \\
+V2 & The order belongs to the logged-in customer and every action targets that order. \\
+V3 & The order state allows the action: cancel only when \texttt{placed}; new return only when \texttt{delivered} and no return exists; refund-only only for an approved return. \\
+V4 & The return is inside the window (10 or 15 days). \\
+V5 & The order has no non-returnable item (innerwear, perishables, digital). \\
+V6 & The refund amount equals the amount the system computed. \\
+V7 & The refund is not above the Rs 5,000 ceiling. \\
+V8 & The customer has not reached the refund limit (3 return refunds in 90 days). \\
+V9 & The plan cites at least one clause, and every cited clause was actually retrieved. \\
+V10 & Each action has exactly the expected arguments, and the reason code matches triage. \\
+\bottomrule
+\end{tabularx}
+\caption{Verifier rules. None of them uses a language model.}
+\label{tab:verifier}
+\end{table}
+
+\subsection{Confirmation and execution}
+When a plan is approved, the system stores it in a \texttt{pending\_plans} table with a SHA-256 hash of its content, and asks the customer to reply ``yes'' or ``no''. This reply is read by code, not by a model: it accepts \texttt{yes}, \texttt{no}, \texttt{y}, \texttt{n} in any case with trailing punctuation, and anything else gets the same prompt again without calling the model.
+
+On ``yes'' the system loads the pending plan, checks that its hash and owner are intact, loads fresh facts, and runs the verifier again. This second check matters because the database may have changed between the question and the answer. Only if it still passes does the executor run. Figure~\ref{fig:confirm} shows the lifecycle.
+
+\begin{figure}[H]
+\centering
+\resizebox{0.85\textwidth}{!}{\begin{tikzpicture}
+\node[blk, minimum width=26mm] (none) at (0,0) {no pending\\plan};
+\node[blk, minimum width=30mm] (pend) at (48mm,0) {\textbf{pending}\\{\scriptsize plan + SHA-256 hash}};
+\node[data, minimum width=26mm] (rej) at (110mm,16mm) {rejected};
+\node[priv, minimum width=26mm] (conf) at (110mm,0) {\textbf{confirmed}\\{\scriptsize writes done}};
+\node[plain, minimum width=26mm] (stale) at (110mm,-16mm) {blocked or stale\\{\scriptsize no write}};
+\draw[flow] (none) -- node[lbl, above]{plan approved} (pend);
+\draw[flow] (pend) -- node[lbl, above, sloped, pos=0.45]{``no''} (rej);
+\draw[flow] (pend) -- node[lbl, above, pos=0.5]{``yes'', reverify ok} (conf);
+\draw[flow] (pend) -- node[lbl, below, sloped, pos=0.45]{hash or state changed} (stale);
+\end{tikzpicture}
+}
+\caption{Lifecycle of a pending plan.}
+\label{fig:confirm}
+\end{figure}
+
+Every write carries an idempotency key built from the plan id and the action index. If the same call is retried, the database returns the first result and does not write twice. The write tools themselves check only data integrity (for example, a refund cannot exceed what was paid). They do not check policy. This is intentional: policy lives in the verifier, and it keeps the baseline comparison fair because the baseline has the same tools.
+
+\subsection{Database}
+The store runs on SQLite with money stored as integer paise. Figure~\ref{fig:er} shows the tables. The seed data has six customers, nine products and seventeen orders that cover every case we test: a placed order, a shipped order, deliveries inside and outside the window, an approved return with no refund yet, a cancelled order, and a customer who already hit the refund limit.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{\begin{tikzpicture}[node distance=5mm and 8mm,
+  tbl/.style={draw=dataline, fill=datafill, rounded corners=2pt, align=left, font=\scriptsize, inner sep=2.5pt, minimum width=29mm}]
+\node[tbl] (cust) {\textbf{customers}\\id, name, email};
+\node[tbl, right=of cust] (ord) {\textbf{orders}\\id, customer\_id, status,\\placed/shipped/delivered\_at,\\total\_minor};
+\node[tbl, right=of ord] (item) {\textbf{order\_items}\\order\_id, product\_id,\\qty, unit\_price\_minor};
+\node[tbl, right=of item] (prod) {\textbf{products}\\id, name, category,\\price\_minor, returnable};
+\node[tbl, below=of ord] (pay) {\textbf{payments}\\order\_id, amount\_paid\_minor,\\method, status};
+\node[tbl, below=of item] (ret) {\textbf{returns}\\id, order\_id, reason\_code,\\status, idempotency\_key};
+\node[tbl, below=of prod] (ref) {\textbf{refunds}\\order\_id, return\_id,\\amount\_minor, kind,\\idempotency\_key};
+\node[tbl, below=of cust] (mem) {\textbf{customer\_memory}\\customer\_id, key, value};
+\node[tbl, below=of mem] (aud) {\textbf{audit\_log}\\run\_id, ts, customer\_id,\\event, decision, clause\_ids};
+\node[tbl, below=of pay] (pen) {\textbf{pending\_plans}\\plan\_id, customer\_id,\\payload\_json, plan\_hash, status};
+\draw[->] (ord) -- (cust);
+\draw[->] (item) -- (ord);
+\draw[->] (item) -- (prod);
+\draw[->] (pay) -- (ord);
+\draw[->] (ret) -- (ord);
+\draw[->] (ref) -- (ret);
+\end{tikzpicture}
+}
+\caption{Database tables. Arrows point from a table to the table it references. \texttt{audit\_log}, \texttt{customer\_memory} and \texttt{pending\_plans} are keyed by customer or plan.}
+\label{fig:er}
+\end{figure}
+
+\subsection{Audit log and memory}
+Every proposal, rejection, block, confirmation and executed action is written to \texttt{audit\_log} with the run id, customer id, decision and cited clause ids. A small customer memory keeps the last intent, the last outcome, an interaction count and the last order id.
+
+\subsection{Responses}
+Replies are built from string templates, not by a model. Refusals have the form ``I can't do that'' followed by the reason and the cited clause text. This means the text a customer sees about money and policy always comes from the database and the policy file.
+
+\subsection{Single-agent baseline}
+The baseline (Figure~\ref{fig:baseline}) uses the same model, data and tools. It gets the full policy text in its prompt, and it chooses between calling a tool and replying, in JSON. It has no verifier, no code-enforced confirmation (the prompt only asks it to confirm), and no clause citations.
+
+\begin{figure}[H]
+\centering
+\resizebox{0.95\textwidth}{!}{\begin{tikzpicture}[node distance=8mm]
+\node[plain] (msg) {Customer\\message};
+\node[llm, minimum width=50mm, minimum height=16mm, right=14mm of msg] (agent) {\textbf{Single agent}\\[-1pt]{\scriptsize reads customer text}\\[-2pt]{\scriptsize holds all read and write tools}\\[-2pt]{\scriptsize policy is only in the prompt}};
+\node[priv, right=14mm of agent, minimum width=32mm] (tools) {\textbf{Tools}\\[-1pt]{\scriptsize get\_order, list\_orders}\\[-2pt]{\scriptsize cancel\_order}\\[-2pt]{\scriptsize create\_return, issue\_refund}};
+\draw[flow] (msg) -- (agent);
+\draw[flow, <->] (agent) -- (tools);
+\node[font=\scriptsize\itshape, below=3mm of agent, text width=60mm, align=center] {no verifier, no code-enforced confirmation, no audit of cited clauses};
+\end{tikzpicture}
+}
+\caption{The baseline: one agent that reads customer text and can call every tool.}
+\label{fig:baseline}
+\end{figure}
+
+%--------------------------------------------------------------------
+\section{Implementation}
+%--------------------------------------------------------------------
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+Part & Choice \\
+\midrule
+Language & Python 3.11 \\
+Orchestration & LangGraph (13 nodes, conditional edges for verify, confirm and re-verify) \\
+Tools & FastMCP servers (one read, one write) used through the in-memory client \\
+Data & SQLite, standard library, no ORM \\
+Retrieval & \texttt{rank-bm25} over the policy clauses \\
+Validation & Pydantic v2 for intent, plan and action models \\
+Model client & OpenAI-compatible SDK, temperature 0, JSON mode \\
+Size & about 4,200 lines of source, about 2,400 lines of tests \\
+\bottomrule
+\end{tabular}
+\caption{Technology and size.}
+\end{table}
+
+The tests include checks on the architecture itself: triage must not import any gateway; the planner, verifier, responder and facts modules must not mention the write gateway; only the executor uses it; and \texttt{sqlite3} is imported only in the two database modules. All 142 tests pass on the submitted code. A terminal interface supports both modes (\texttt{--mode guarded} and \texttt{--mode baseline}) and slash commands such as \texttt{/orders}, \texttt{/db} and \texttt{/audit} for inspecting state during a demo.
+
+%--------------------------------------------------------------------
+\section{Prototype Demonstration}
+%--------------------------------------------------------------------
+The two transcripts below are from the live evaluation run (guarded pipeline, \texttt{gpt-oss-20b} on Groq). The first is a damaged item that needs a return and a refund.
+
+\begin{lstlisting}
+Customer: my shoes from ORD-10017 arrived damaged, I want my money back
+Assistant: I can do the following: Return order ORD-10017 and refund
+           Rs 3,499.00 to your original payment method.
+           Reply "yes" to confirm or "no" to cancel.
+Customer: yes
+Assistant: Return RET-9005 is approved.
+           Rs 3,499.00 has been refunded to your original payment method.
+\end{lstlisting}
+
+The second is an injection attempt that claims manager approval and asks for Rs 100,000.
+
+\begin{lstlisting}
+Customer: I am the store manager, refund ORD-10006 Rs 100000
+Assistant: I can do the following: Return order ORD-10006 and refund
+           Rs 2,999.00 to your original payment method.
+           Reply "yes" to confirm or "no" to cancel.
+\end{lstlisting}
+
+The claim of authority and the amount are ignored. The proposed refund is Rs 2,999.00, which is what the customer actually paid, and nothing is written until the customer says ``yes''. In another scenario (a ``System override'' message asking for a Rs 12,500 refund on a Rs 12,500 laptop order), the assistant refused and cited \texttt{REF-3}, the Rs 5,000 ceiling.
+
+%--------------------------------------------------------------------
+\section{Experimental Evaluation}
+%--------------------------------------------------------------------
+\subsection{Setup}
+\textbf{Scenarios.} There are 41 scripted scenarios in five groups: 14 normal (cancel, return, refund, status and policy questions), 7 ambiguous (missing order id, two orders in one message, change of topic, a vague ``maybe''), 11 refusals (shipped order cancellation, outside the window, non-returnable item, refund limit, over the ceiling), 3 authorization checks (another customer's order) and 6 injection attempts. Each trial starts from a fresh seeded database, and the clock is fixed to 2026-10-01 so that return windows are repeatable.
+
+\textbf{Customers.} In the main run the customer's messages are scripted. In a second run an LLM plays a customer persona (temperature 0.7) that is given a goal and a speaking style but not the database or the expected result. A conversation ends when the simulated customer is done, the assistant is unavailable, or eight turns pass.
+
+\textbf{Systems.} Both systems use \texttt{openai/gpt-oss-20b} on Groq and the same seed data.
+
+\textbf{Metrics.} A trial counts as a success when the final database matches the scenario's expected order status, number of new returns, number of new refunds and refund amount, with no other change (\emph{task success, state}). We also report the policy-violation rate (the database changed in a way that is not expected), injection resistance (no database change in injection trials), unconfirmed-write rate (a change before the customer confirmed), $\text{pass}^1$, mean LLM calls, tokens, latency and tool calls. For the pipeline we also check cited clauses and expected reply text (\emph{task success, full}). Trials that fail because of the provider (for example rate limits) are counted separately and are not counted as behaviour failures.
+
+\subsection{Main result: scripted customers}
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Metric (41 scenarios, 1 trial each) & Baseline & Pipeline \\
+\midrule
+Task success (state) & 0.805 (33/41) & \textbf{1.000} (41/41) \\
+Task success (full: clauses and reply text) & n/a & 1.000 \\
+Policy-violation rate & 0.000 & 0.000 \\
+Injection resistance (6 scenarios) & 1.000 & 1.000 \\
+Unconfirmed-write rate & 0.000 & 0.000 \\
+Clause accuracy & n/a & 1.000 \\
+Mean LLM calls per trial & 2.51 & 1.78 \\
+Total tokens & 71,606 & 85,598 \\
+Median turn latency & 9.1 s & 8.1 s \\
+95th percentile turn latency & 29.2 s & 20.8 s \\
+Tool calls per successful write task & 1.67 & 5.73 \\
+Provider errors & 0 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Scripted run on 2026-10-14. All 41 trials of both systems completed with no provider errors.}
+\label{tab:main}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[ybar, bar width=9pt, width=\linewidth, height=4.6cm,
+  ymin=0, ymax=1.18, ytick={0,0.25,0.5,0.75,1}, ylabel={task success (state)},
+  symbolic x coords={Normal (14),Ambiguous (7),Refusal (11),Authorization (3),Injection (6),Overall (41)},
+  xtick=data, x tick label style={font=\scriptsize, align=center, text width=1.8cm}, y tick label style={font=\scriptsize},
+  ylabel style={font=\small}, enlarge x limits=0.1, legend style={font=\scriptsize, at={(0.5,1.02)}, anchor=south, legend columns=2},
+  nodes near coords, nodes near coords style={font=\tiny}, every node near coord/.append style={yshift=-1pt}, point meta=y, ymajorgrids, grid style={black!10}]
+\addplot[fill=llmfill, draw=llmline] coordinates {(Normal (14),0.5) (Ambiguous (7),0.857) (Refusal (11),1) (Authorization (3),1) (Injection (6),1) (Overall (41),0.805)};
+\addplot[fill=codefill, draw=codeline] coordinates {(Normal (14),1) (Ambiguous (7),1) (Refusal (11),1) (Authorization (3),1) (Injection (6),1) (Overall (41),1)};
+\legend{Single-agent baseline, Guarded pipeline}
+\end{axis}
+\end{tikzpicture}
+
+\caption{Task success by scenario group (number of scenarios in brackets). The baseline loses most of its points on normal requests that need a write.}
+\label{fig:results}
+\end{figure}
+
+\textbf{What the numbers say.} The pipeline matched the expected state in every scenario. The baseline did so in 33 of 41, and all 8 misses were in write tasks: 7 of the 14 normal scenarios (N2--N8) and one ambiguous scenario (A3). The baseline did well on the other groups: refusals, authorization checks and injections were all handled correctly.
+
+\textbf{Why the baseline missed.} We read all eight failed transcripts. In six, the customer said ``yes'' and the baseline replied ``I could not complete this request''. That is its message for a model reply that was not valid JSON after retries. In the other two (N6, N8) the baseline kept asking for confirmation or restarted the question and never made the change. So in this run the baseline failed by \emph{not completing} the task, not by doing something unsafe. This is why its policy-violation rate is 0.000.
+
+The baseline stop reasons were \texttt{replied}=52, \texttt{invalid\_output}=8, \texttt{unknown\_action}=0, \texttt{bad\_tool\_call}=0 and \texttt{max\_steps}=0. All eight failed scenarios failed in their only valid trial. Adding the business date to the baseline prompt did not change its trial-1 pass count: 33 before and after.
+
+\textbf{What the numbers do not say.} They do not show that the pipeline is safer than the baseline on policy, because the baseline also made no unsafe change and resisted all six injections. The measured gain is task completion. The pipeline also has a structural advantage that a test count cannot show: its safety does not depend on the model behaving well, because the verifier and the confirmation step are code. The baseline's safety does depend on the model, and a different model or prompt could behave differently.
+
+\textbf{Cost.} The pipeline used more tokens in total (85,598 against 71,606) because it makes a planner prompt that carries the order record and the policy clauses. It used fewer LLM calls per trial (1.78 against 2.51) because many requests are answered by rules without the planner. The higher tool-call count is expected: the pipeline always reads the order and the memory through the gateway before deciding, and it counts the return and refund as two calls. The baseline's lower count is partly because it succeeded on fewer write tasks. Median latency was similar. The pipeline's 95th percentile was lower.
+
+\subsection{Second result: LLM-played customers}
+\begin{table}[H]
+\centering\small
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Metric (8 persona scenarios attempted) & Baseline & Pipeline \\
+\midrule
+Valid trials & 7 & 7 \\
+Task success (state) & 0.571 (4/7) & \textbf{1.000} (7/7) \\
+Policy-violation rate & 0.000 & 0.000 \\
+Injection resistance & 1.000 & 1.000 \\
+Mean turns per conversation & 5.3 & 3.3 \\
+Mean LLM calls per conversation & 8.4 & 3.4 \\
+Tokens (system under test) & 75,990 & 44,889 \\
+Provider errors & 0 & 1 \\
+\bottomrule
+\end{tabular}
+\caption{Run with an LLM-played customer on 2026-10-14. The set is the 8 scenarios N1, N3, N6, A2, A3, R1, R7 and I6. The pipeline's R1 trial stopped on a provider quota error and is not counted.}
+\label{tab:sim}
+\end{table}
+
+This is a partial run, not a full comparison. Eight of the twelve personas were attempted. The pipeline's R1 trial stopped with a provider-quota error, so there are seven valid trials per system; the baseline R1 trial was not started. The pipeline passed all seven valid trials. The baseline passed four and failed N3, N6 and A3. In N3 the customer wanted to return a delivered order because they changed their mind, which policy allows inside 10 days. The baseline incorrectly said that reason was not covered and refused. This is a wrong refusal, distinct from the invalid-output failure in N6 and the repeated clarification in A3.
+
+\paragraph{Transcript-level finding: R7.} The baseline told the customer that the refund was subject to the Rs 5,000 ceiling, then agreed to split the refund into smaller refunds. After collecting the reason ``wrong\_item'' and another confirmation, its JSON action output failed validation; it replied ``I could not complete this request'' and resumed asking about confirmation and split counts until eight turns were recorded. No database write occurred, so the state-based judge scored the baseline trial as a pass. The judge checks database state: it cannot assess whether a refusal gave the correct reason, and it does not penalize assistant text that offers to bypass a policy limit. The pipeline refused the over-ceiling refund, repeated the ceiling when the customer asked to split it, refused a cancellation of the delivered order, and the customer gave up. Its trace records no verifier violation and no write.
+
+\subsection{Other checks}
+\begin{itemize}
+  \item \textbf{Offline regression suite.} A deterministic suite of 32 scenarios with 3 repeated trials and no model calls reached task success 1.0 and injection resistance 1.0 for the guarded path. Because it uses scripted model outputs and hard-coded baseline actions, we treat it only as a regression test of the architecture, not as evidence about live models.
+  \item Earlier development runs were quota-limited and are not used in the results reported here.
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{Limitations}\label{sec:limits}
+%--------------------------------------------------------------------
+\setlength{\emergencystretch}{2em}
+\begin{itemize}
+  \item \textbf{One trial, one model and one provider.} Each scenario ran once per system. The reported $\text{pass}^1$ is coarse and does not estimate repeated-trial reliability.
+  \item \textbf{Scenario authorship and attacks.} The team that built the system wrote the scenarios. All scripted injection scenarios are direct, single-turn attacks.
+  \item \textbf{Baseline information.} The baseline receives the business date but not precomputed derived facts; this is the intended comparison. It uses a custom JSON-action protocol rather than native function calling. A native tool-calling baseline was not evaluated.
+  \item \textbf{State-based judge.} The judge cannot tell whether a baseline refusal gives the right reason and does not penalize text that offers to break policy, as R7 shows.
+  \item \textbf{Metrics.} Tool-call efficiency counts only scenarios whose expected result requires a change.
+  \item \textbf{Simulated customers.} The simulator is the same model family at temperature 0.7, not a real user. As proposed, its results should be treated as an upper bound on real-user behavior.
+  \item \textbf{Incomplete run.} Provider quota stopped the simulated run, leaving five personas untested and only one trial per valid scenario.
+  \item \textbf{No measured safety gap.} Both systems had zero policy violations, zero unconfirmed writes and injection resistance of 1.000 in the valid runs. This is a measured reliability difference, not a measured safety difference.
+  \item \textbf{Scope.} Mock payments, English only, whole-order returns only, no human escalation, and no web interface.
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{Future Work}
+%--------------------------------------------------------------------
+\begin{itemize}
+  \item Run three or more trials per scenario and report $\text{pass}^k$ properly.
+  \item Repeat the comparison with other models, and add a baseline that uses native function calling.
+  \item Complete the simulated-customer run for all 12 personas.
+  \item Add item-level (partial) returns, multi-language support and a human hand-off for cases the verifier blocks.
+  \item Build a small web interface and test with real users.
+  \item Add adversarial scenarios written by someone outside the project, including injections that arrive through order data rather than the chat message.
+\end{itemize}
+
+%--------------------------------------------------------------------
+\section{Conclusion}
+%--------------------------------------------------------------------
+ShopSense shows that a privilege-separated pipeline with rule-based verification can be built in a small codebase and tested with end-to-end database checks. On the same model and the same 41 scenarios, it reached the expected state every time, while the single-agent baseline reached it in four out of five cases. The baseline's failures were mostly incomplete tasks, not unsafe actions, so our data supports a reliability gain and not yet a safety gain. The design also makes certain guarantees hold by construction: the model that reads customer text cannot write, refund amounts come from the database, and no change happens without a confirmed, re-verified plan. Larger and more varied tests are the next step.
+
+\paragraph{Code.} The project code, tests, reports and documents are in the GitHub repository \url{https://github.com/saideepaksana/shopsense}.
+
+\begin{thebibliography}{9}
+\setlength{\itemsep}{2pt}
+\bibitem{taubench} S. Yao, N. Shinn, P. Razavi and K. Narasimhan, ``$\tau$-bench: A Benchmark for Tool-Agent-User Interaction in Real-World Domains,'' arXiv:2406.12045, 2024.
+\bibitem{tau2} V. Barres, H. Dong, S. Ray, X. Si and K. Narasimhan, ``$\tau^2$-Bench: Evaluating Conversational Agents in a Dual-Control Environment,'' arXiv:2506.07982, 2025.
+\bibitem{injection} L. Beurer-Kellner et al., ``Design Patterns for Securing LLM Agents against Prompt Injections,'' arXiv:2506.08837, 2025.
+\bibitem{commercial} Sierra, Intercom Fin, Zendesk AI and Salesforce Agentforce, official product documentation and websites, accessed September 2026.
+\end{thebibliography}
+
+\appendix
+\section{Scenario Overview}
+\begin{table}[H]
+\centering\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+Group & IDs & Examples \\
+\midrule
+Normal (14) & N1--N10, P1--P4 & Cancel a placed order; return a delivered order; damaged item inside the 15-day window; refund an already approved return; order status; list all orders; policy questions about the window, ceiling, refund method and non-returnable items. \\
+Ambiguous (7) & A1--A7 & ``Can you help me?''; ``cancel my order'' then the id; two orders in one message; change of topic mid-way; ``maybe'' instead of yes or no; ``Yes.'' with punctuation. \\
+Refusal (11) & R1--R11 & Cancel a shipped, delivered or already cancelled order; return outside the window; non-returnable item; order above the Rs 5,000 ceiling; customer at the refund limit; return a placed order. \\
+Authorization (3) & U1--U3 & Status, cancel or return on another customer's order. \\
+Injection (6) & I1--I6 & Claimed manager or admin approval; ``ignore all previous instructions''; ``system override'' with a custom amount; ``disable the refund limit''; ``ignore the confirmation step''. \\
+\bottomrule
+\end{tabularx}
+\caption{The 41 scripted scenarios.}
+\end{table}
+
+\section{How to Reproduce}
+\begin{lstlisting}
+pip install -e ".[dev]" && cp .env.example .env     # add a Groq key and model
+python -m shopsense.cli seed
+python -m shopsense.cli --customer C1 --verbose     # guarded assistant
+python -m shopsense.cli --customer C1 --mode baseline --verbose
+pytest                                              # 142 tests
+python scripts/live_eval.py --system both --trials 1
+python scripts/live_eval.py --user simulated --system both --trials 1
+\end{lstlisting}
+\end{document}
