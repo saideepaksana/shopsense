@@ -76,12 +76,17 @@ Sai Deepak (CS23BTECH11055) \quad Harshith (CS23BTECH11045)\\[1mm]
 \end{itemize}
 \end{frame}
 
-\begin{frame}{Why a guarded assistant?}
-\begin{itemize}\setlength{\itemsep}{6pt}
-  \item A customer-care assistant can change orders and issue refunds.
-  \item A wrong action can affect a customer's money.
-  \item ShopSense limits this risk with policy checks, confirmation and restricted write access.
+\begin{frame}{Our idea: a guarded assistant}
+\begin{itemize}\setlength{\itemsep}{8pt}
+  \item The part that \textbf{reads} the customer's message has \textbf{no tools}.
+  \item The part that \textbf{writes} to the database \textbf{never sees} the message.
+  \item Refund amounts come from the database, never from the customer.
+  \item Plain rules check every plan, and the customer must confirm before anything changes.
 \end{itemize}
+\vspace{3mm}
+\begin{block}{Research question}
+Is this safer and more reliable than one agent that holds every tool?
+\end{block}
 \end{frame}
 
 \begin{frame}{What ShopSense does}
@@ -98,9 +103,8 @@ Sai Deepak (CS23BTECH11055) \quad Harshith (CS23BTECH11045)\\[1mm]
 \column{0.5\textwidth}
 \textbf{Mock store}
 \begin{itemize}\setlength{\itemsep}{3pt}
-  \item SQLite database, money in paise
   \item 6 customers, 9 products, 17 orders
-  \item 18-clause store policy
+  \item A written store policy with numbered clauses
   \item Rules: 10/15-day window, Rs 5,000 refund ceiling, 3 refunds in 90 days
 \end{itemize}
 \end{columns}
@@ -185,11 +189,11 @@ Same model, same data, same tools. No verifier, no code-enforced confirmation.
 \begin{frame}{Evaluation setup}
 \begin{itemize}\setlength{\itemsep}{5pt}
   \item \textbf{41 scripted scenarios}: 14 normal, 7 ambiguous, 11 refusal, 3 authorization, 6 injection.
-  \item Fresh seeded database per trial. Clock fixed to 2026-10-01.
+  \item Every trial starts from a fresh database.
   \item Success means the \textbf{final database state} matches the expected state. We check the database, not only the reply.
-  \item Both systems: \texttt{openai/gpt-oss-20b} on Groq, temperature 0.
-  \item Extra run: an \textbf{LLM plays the customer} (temperature 0.7).
-  \item Also measured: policy violations, injection resistance, unconfirmed writes, tokens, latency.
+  \item Both systems use the same model: \texttt{gpt-oss-20b} on Groq.
+  \item We also count policy violations, injections that worked, and changes made without confirmation.
+  \item A small extra run used an LLM as the customer (partial, see limitations).
 \end{itemize}
 \end{frame}
 
@@ -203,12 +207,9 @@ Task success (state) & 0.805 \; (33/41) & \textbf{1.000} \; (41/41) \\
 Policy-violation rate & 0.000 & 0.000 \\
 Injection resistance (6) & 1.000 & 1.000 \\
 Unconfirmed-write rate & 0.000 & 0.000 \\
-Mean LLM calls per trial & 2.51 & 1.78 \\
-Total tokens & 71,606 & 85,598 \\
-Median / p95 latency & 9.1 s / 29.2 s & 8.1 s / 20.8 s \\
 \bottomrule
 \end{tabular}\\[3mm]
-{\footnotesize Run of 2026-10-14. All trials completed, no provider errors.}
+{\footnotesize One trial per scenario. All trials completed. Cost and latency are in the report.}
 \end{frame}
 
 \begin{frame}{Where the baseline lost points}
@@ -229,8 +230,8 @@ Median / p95 latency & 9.1 s / 29.2 s & 8.1 s / 20.8 s \\
 
 \end{minipage}
 \begin{itemize}\setlength{\itemsep}{2pt}\footnotesize
-  \item All 8 misses were write tasks: 7 normal (N2--N8) and 1 ambiguous (A3).
-  \item In 6 of 8, after ``yes'' the baseline replied ``I could not complete this request'' (invalid JSON). In 2 it kept re-asking.
+  \item All 8 misses were tasks that needed a change, such as a cancel, return or refund.
+  \item In 6 of them, after ``yes'' the baseline replied ``I could not complete this request''. In 2 it kept asking again.
   \item So the baseline failed by \textbf{not finishing}, not by doing something unsafe.
 \end{itemize}
 \end{frame}
@@ -238,36 +239,35 @@ Median / p95 latency & 9.1 s / 29.2 s & 8.1 s / 20.8 s \\
 
 
 \begin{frame}{Limitations}
-\begin{itemize}\footnotesize\setlength{\itemsep}{2pt}
-  \item One trial per scenario, one model and provider; $\text{pass}^1$ is coarse. The team wrote the system and scenarios; injections are direct, single-turn attacks.
-  \item Baseline gets the business date but not derived facts, as intended. It uses JSON actions; native tool calling was not tested.
-  \item The state judge misses wrong refusal reasons and policy-breaking offers in assistant text (R7). Tool-call efficiency counts expected-change scenarios only.
-  \item The simulated customer is the same model family at temperature 0.7; treat results as an upper bound on real-user behavior. Provider quota left the run partial.
-  \item Mock payments, English only, whole-order returns, no human hand-off, no web UI.
+\begin{itemize}\setlength{\itemsep}{6pt}
+  \item One trial per scenario, one model, one provider.
+  \item We wrote the scenarios ourselves, and the injection attacks are simple, single-message ones.
+  \item The baseline uses a JSON action format, not native tool calling.
+  \item The LLM-played customer run is partial, and it is not a real user.
+  \item Mock payments, English only, whole-order returns, no human hand-off, no web interface.
 \end{itemize}
 \end{frame}
 
 \begin{frame}{Future work}
 \begin{itemize}\setlength{\itemsep}{5pt}
-  \item Three or more trials per scenario, and report $\text{pass}^k$.
+  \item Three or more trials per scenario, to measure consistency.
   \item Other models, and a baseline with native function calling.
   \item Finish the 12-persona simulated-customer run.
   \item Item-level returns, more languages, human hand-off.
-  \item Adversarial scenarios from outside the project, including injections that arrive through order data.
+  \item Harder attack tests, written by someone outside the project.
   \item Web interface and tests with real users.
 \end{itemize}
 \end{frame}
 
 \begin{frame}{Conclusion}
 \centering
-{\Huge\bfseries\color{accent}41/41}\quad expected database states reached\\[2mm]
-{\large compared with 33/41 for the single-agent baseline}\\[8mm]
+{\Large\bfseries\color{accent} Splitting the work and checking every plan with code\\made the assistant finish more tasks.}\\[6mm]
+{\large 41 of 41 scenarios correct, against 33 of 41 for the single agent (same model, one trial each).}\\[4mm]
 \begin{block}{What we learned}
-The guarded pipeline completed more tasks in this evaluation. Both systems had zero measured policy violations, so these results show a reliability gain, not a measured safety gain.
+Both systems stayed safe in our tests, so we show a reliability gain, not a measured safety gain. The pipeline's safety rules are enforced by code, not by the model behaving well.
 \end{block}
-\vspace{3mm}
-\small Same model and 41 scenarios. One trial per scenario.\\[2mm]
-Code and report: github.com/saideepaksana/shopsense
+\vspace{1mm}
+\small Code and report: github.com/saideepaksana/shopsense
 \end{frame}
 
 \end{document}

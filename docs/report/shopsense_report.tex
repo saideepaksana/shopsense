@@ -73,7 +73,10 @@
 
 \begin{document}
 \maketitle
-\vspace{-1.0cm}
+\begin{center}
+\small\textbf{Evaluation recordings for TAs:} \href{https://drive.google.com/drive/folders/1kxtCOCa9T6eWW9WEGTdjKTHUjnvW6C_Z?usp=drive_link}{\textcolor{customblue}{\underline{Open recordings folder}}}
+\end{center}
+\vspace{-0.5cm}
 
 \begin{abstract}
 \noindent Customer-care assistants that can cancel orders and issue refunds can make costly mistakes. ShopSense is a prototype assistant for a mock online store that tries to make these actions safer by design instead of by prompting alone. It splits the work into small stages. The only stage that reads customer text can use no tools. The only stage that can write to the database never sees customer text. A rule-based verifier checks every plan before anything runs, and the customer must confirm in plain ``yes'' or ``no'' before any change is made. We compare this guarded pipeline with a single agent that has all the tools, using the same model (\texttt{openai/gpt-oss-20b} on Groq) and the same 41 scripted scenarios. The pipeline reached the expected database state in 41 of 41 scenarios. The baseline reached it in 33 of 41. Neither system made an unsafe change in our tests, so the main measured gain is reliability, not a drop in policy violations. The results come from one trial per scenario, one model and scenarios we wrote ourselves, and we state these limits clearly in Section~\ref{sec:limits}.
