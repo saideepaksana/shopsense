@@ -1,17 +1,23 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
-\usepackage{amsmath}\usepackage{mathpazo}\renewcommand{\ttdefault}{pcr}\usepackage[scaled=0.9]{helvet}
-\usepackage[a4paper,margin=1in]{geometry}
-\usepackage{booktabs,array,tabularx,enumitem,xcolor,float,caption}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{geometry}
+\usepackage{titlesec}
+\usepackage{xcolor}
+\usepackage{fancyhdr}
+\usepackage{booktabs,array,tabularx,float,caption}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.16}
-\usepackage[hidelinks]{hyperref}
-\usepackage{fancyhdr}
 \usepackage{listings}
 % Shared TikZ setup, used by both the report and the slides
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric,calc}
+\usepackage[hidelinks]{hyperref}
+\geometry{a4paper,margin=0.9in}
+\definecolor{customblue}{RGB}{0,102,204}
 \definecolor{llmfill}{HTML}{FDE9CF}
 \definecolor{llmline}{HTML}{C46A00}
 \definecolor{codefill}{HTML}{E4EEF9}
@@ -36,21 +42,38 @@
 }
 
 
-\setlength{\parskip}{4pt}
-\setlist{itemsep=1pt,topsep=3pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlist[itemize]{leftmargin=*,topsep=2pt,itemsep=1pt,parsep=0pt}
+\titleformat{\section}
+  {\large\bfseries\color{customblue}}
+  {\thesection}{0.5em}{}
+\titleformat{\subsection}
+  {\normalsize\bfseries\color{customblue}}
+  {\thesubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{8pt}{4pt}
+\titlespacing*{\subsection}{0pt}{5pt}{2pt}
 \captionsetup{font=small,labelfont=bf}
-\pagestyle{fancy}\fancyhf{}\fancyhead[L]{\small\textit{ShopSense}}\fancyhead[R]{\small\thepage}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\headheight}{14pt}
+\fancyhead[L]{\textit{ShopSense}}
+\fancyhead[R]{\thepage}
 \renewcommand{\arraystretch}{1.15}
 \lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single,framerule=0.3pt,
   backgroundcolor=\color{black!3},xleftmargin=2pt,xrightmargin=2pt}
 
-\title{\textbf{ShopSense}\\[4pt]\large A Guarded Customer-Care Assistant for Order Operations\\[2pt]
-\normalsize Project Report}
-\author{Sai Deepak (CS23BTECH11055) \quad Harshith (CS23BTECH11045)}
+\title{\vspace{-2.4cm}\textbf{ShopSense}\\[6pt]
+       \large A Guarded Customer-Care Assistant for Order Operations\\[4pt]
+       \normalsize Project Report\\[9pt]
+       Sai Deepak (CS23BTECH11055)\quad Harshith (CS23BTECH11045)}
+\author{}
 \date{October 2026}
 
 \begin{document}
 \maketitle
+\vspace{-1.0cm}
 
 \begin{abstract}
 \noindent Customer-care assistants that can cancel orders and issue refunds can make costly mistakes. ShopSense is a prototype assistant for a mock online store that tries to make these actions safer by design instead of by prompting alone. It splits the work into small stages. The only stage that reads customer text can use no tools. The only stage that can write to the database never sees customer text. A rule-based verifier checks every plan before anything runs, and the customer must confirm in plain ``yes'' or ``no'' before any change is made. We compare this guarded pipeline with a single agent that has all the tools, using the same model (\texttt{openai/gpt-oss-20b} on Groq) and the same 41 scripted scenarios. The pipeline reached the expected database state in 41 of 41 scenarios. The baseline reached it in 33 of 41. Neither system made an unsafe change in our tests, so the main measured gain is reliability, not a drop in policy violations. The results come from one trial per scenario, one model and scenarios we wrote ourselves, and we state these limits clearly in Section~\ref{sec:limits}.
