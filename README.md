@@ -29,7 +29,7 @@ The [design guide](docs/shopsense_design.pdf) and [source](docs/shopsense_design
 
 ## Local scripted evaluation
 
-Run the 32-scenario comparison with isolated seeded databases and no model or network calls:
+Run the 41-scenario comparison with isolated seeded databases and no model or network calls:
 
 ```bash
 python scripts/evaluate.py --trials 3 --output data/evaluation.json
